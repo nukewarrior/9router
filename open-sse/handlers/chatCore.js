@@ -295,6 +295,8 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     connectionProxyEnabled: credentials?.providerSpecificData?.connectionProxyEnabled === true,
     connectionProxyUrl: credentials?.providerSpecificData?.connectionProxyUrl || "",
     connectionNoProxy: credentials?.providerSpecificData?.connectionNoProxy || "",
+    strictProxy: credentials?.providerSpecificData?.strictProxy === true,
+    mihomoRouting: credentials?.providerSpecificData?.mihomoRouting || null,
     vercelRelayUrl: credentials?.providerSpecificData?.vercelRelayUrl || "",
   };
 
@@ -370,7 +372,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       // refreshWithRetry's 2nd/3rd attempt reuses the already-consumed RT →
       // invalid_grant → auth_failed retryable=false.
       const newCredentials = await refreshWithRetry(async () => {
-        const result = await executor.refreshCredentials(credentials, log);
+        const result = await executor.refreshCredentials(credentials, log, proxyOptions);
         if (result?.refreshToken && result.refreshToken !== credentials.refreshToken) {
           if (result.accessToken) credentials.accessToken = result.accessToken;
           credentials.refreshToken = result.refreshToken;

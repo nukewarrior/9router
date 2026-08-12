@@ -88,6 +88,31 @@ export async function resolveConnectionProxyConfig(
       const proxyUrl = normalizeString(proxyPool?.proxyUrl);
       const noProxy = normalizeString(proxyPool?.noProxy);
 
+      // Keep managed Mihomo routes fail-closed even if a stale/corrupt row
+      // has lost its mixed proxy URL. proxyAwareFetch will surface the proxy
+      // error instead of falling through to a direct connection.
+      if (proxyPool?.type === "mihomo" && proxyPool.isActive === true) {
+        return {
+          source: "mihomo",
+
+          proxyPoolId,
+          proxyPool,
+
+          connectionProxyEnabled: true,
+          connectionProxyUrl: proxyUrl,
+          connectionNoProxy: noProxy,
+          strictProxy: true,
+          mihomoRouting: {
+            poolId: proxyPoolId,
+            controllerId: normalizeString(proxyPool.controllerId),
+            providerName: normalizeString(proxyPool.providerName),
+            nodeName: normalizeString(proxyPool.nodeName),
+            selectorName: normalizeString(proxyPool.selectorName),
+            sourceAvailable: proxyPool.sourceAvailable !== false,
+          },
+        };
+      }
+
       const isValidPool =
         proxyPool &&
         proxyPool.isActive === true &&

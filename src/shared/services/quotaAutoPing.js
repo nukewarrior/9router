@@ -99,7 +99,8 @@ function buildProxyOptions(cfg) {
     connectionProxyUrl: cfg.connectionProxyUrl || "",
     connectionNoProxy: cfg.connectionNoProxy || "",
     vercelRelayUrl: cfg.vercelRelayUrl || "",
-    strictProxy: false,
+    strictProxy: cfg.strictProxy === true,
+    mihomoRouting: cfg.mihomoRouting || null,
   };
 }
 

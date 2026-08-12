@@ -16,6 +16,7 @@ import {
 import { getMitmStatus, startMitm, loadEncryptedPassword, initDbHooks, restoreToolDNS, removeAllDNSEntriesSync } from "@/mitm/manager";
 import { syncToJson as syncMitmAliasCache } from "@/lib/mitmAliasCache";
 import { killAllBridges } from "@/lib/mcp/stdioSseBridge";
+import { configureMihomoSyncScheduler } from "@/shared/services/mihomoProxySync.js";
 
 // Inject correct paths and DB hooks into manager.js (CJS) from ESM context
 (function bootstrapMitm() {
@@ -82,6 +83,9 @@ export async function initializeApp() {
 async function runHeavyStartup() {
   await cleanupProviderConnections();
   const settings = await getSettings();
+
+  configureMihomoSyncScheduler({ settings, immediate: true })
+    .catch((e) => console.log("[Mihomo] startup sync failed:", e?.safeMessage || "synchronization failed"));
 
   // Auto-resume tunnel (once per process)
   if (settings.tunnelEnabled && !g.tunnelAutoResumed) {

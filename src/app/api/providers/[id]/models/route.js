@@ -403,6 +403,7 @@ const PROVIDER_MODELS_CONFIG = {
           connectionNoProxy: proxy.connectionNoProxy || "",
           vercelRelayUrl: proxy.vercelRelayUrl || "",
           strictProxy: proxy.strictProxy === true,
+          mihomoRouting: proxy.mihomoRouting || null,
         },
         onCredentialsRefreshed: async (refreshed) => {
           await updateProviderCredentials(connection.id, {

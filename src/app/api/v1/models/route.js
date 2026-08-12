@@ -89,6 +89,7 @@ const LIVE_MODEL_RESOLVERS = {
         connectionNoProxy: proxy.connectionNoProxy || "",
         vercelRelayUrl: proxy.vercelRelayUrl || "",
         strictProxy: proxy.strictProxy === true,
+        mihomoRouting: proxy.mihomoRouting || null,
       },
       onCredentialsRefreshed: async (refreshed) => {
         await updateProviderCredentials(conn.id, {

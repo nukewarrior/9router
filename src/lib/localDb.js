@@ -2,6 +2,9 @@
 // Kept for backward compatibility with existing imports.
 export {
   getSettings, updateSettings, isCloudEnabled, getCloudUrl,
+  getMihomoControllerConfig, updateMihomoControllerConfig,
+  updateMihomoControllerStatus, sanitizeMihomoControllerConfig,
+  getMihomoControllerStatus,
   getProviderConnections, getProviderConnectionById,
   createProviderConnection, updateProviderConnection,
   deleteProviderConnection, deleteProviderConnectionsByProvider,
@@ -10,6 +13,7 @@ export {
   createProviderNode, updateProviderNode, deleteProviderNode,
   getProxyPools, getProxyPoolById,
   createProxyPool, updateProxyPool, deleteProxyPool,
+  syncMihomoProxyPools, markMihomoPoolsUnavailable,
   getApiKeys, getApiKeyById, createApiKey, updateApiKey, deleteApiKey, validateApiKey,
   getCombos, getComboById, getComboByName,
   createCombo, updateCombo, deleteCombo,

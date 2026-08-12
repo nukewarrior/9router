@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
-import { getSettings, updateSettings } from "@/lib/localDb";
+import {
+  getSettings,
+  updateSettings,
+  sanitizeMihomoControllerConfig,
+  getMihomoControllerStatus,
+} from "@/lib/localDb";
 import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
 import { resetComboRotation } from "open-sse/services/combo.js";
 import bcrypt from "bcryptjs";
@@ -17,8 +22,12 @@ const PROTECTED_SETTING_KEYS = ["password", "mitmSudoEncrypted"];
 export async function GET() {
   try {
     const settings = await getSettings();
-    const { password, oidcClientSecret, ...safeSettings } = settings;
+    const { password, oidcClientSecret, mihomoController, ...safeSettings } = settings;
     safeSettings.oidcConfigured = !!(safeSettings.oidcIssuerUrl && safeSettings.oidcClientId && oidcClientSecret);
+    safeSettings.mihomoController = {
+      ...sanitizeMihomoControllerConfig(mihomoController),
+      status: getMihomoControllerStatus(mihomoController),
+    };
     
     const enableRequestLogs = process.env.ENABLE_REQUEST_LOGS === "true";
     const enableTranslator = process.env.ENABLE_TRANSLATOR === "true";
@@ -38,6 +47,17 @@ export async function GET() {
 export async function PATCH(request) {
   try {
     const body = await request.json();
+
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return NextResponse.json({ error: "Invalid settings payload" }, { status: 400 });
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, "mihomoController")) {
+      return NextResponse.json(
+        { error: "mihomoController must be changed through its dedicated API", code: "MIHOMO_SETTINGS_PROTECTED" },
+        { status: 400 },
+      );
+    }
 
     // Strip protected secrets before any internal handling sets them
     for (const key of PROTECTED_SETTING_KEYS) delete body[key];
@@ -108,8 +128,12 @@ export async function PATCH(request) {
         .catch((error) => console.warn("[AutoPing] settings update failed:", error.message));
     }
 
-    const { password, oidcClientSecret, ...safeSettings } = settings;
+    const { password, oidcClientSecret, mihomoController, ...safeSettings } = settings;
     safeSettings.oidcConfigured = !!(safeSettings.oidcIssuerUrl && safeSettings.oidcClientId && oidcClientSecret);
+    safeSettings.mihomoController = {
+      ...sanitizeMihomoControllerConfig(mihomoController),
+      status: getMihomoControllerStatus(mihomoController),
+    };
     return NextResponse.json(safeSettings, { headers: SETTINGS_RESPONSE_HEADERS });
   } catch (error) {
     console.log("Error updating settings:", error);

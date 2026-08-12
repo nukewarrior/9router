@@ -144,14 +144,16 @@ export async function GET(request, { params }) {
       return Response.json({ message: "Usage not available for this connection" });
     }
 
-    // Resolve connection proxy config; force strictProxy=false so quota/refresh fall back to direct on failure
+    // Managed Mihomo pools stay fail-closed; ordinary pools preserve their
+    // legacy fail-open behavior because strictProxy is false for them.
     const proxyConfig = await resolveConnectionProxyConfig(connection.providerSpecificData);
     const proxyOptions = {
       connectionProxyEnabled: proxyConfig.connectionProxyEnabled === true,
       connectionProxyUrl: proxyConfig.connectionProxyUrl || "",
       connectionNoProxy: proxyConfig.connectionNoProxy || "",
       vercelRelayUrl: proxyConfig.vercelRelayUrl || "",
-      strictProxy: false,
+      strictProxy: proxyConfig.strictProxy === true,
+      mihomoRouting: proxyConfig.mihomoRouting || null,
     };
 
     // Refresh credentials only for OAuth connections (apikey has no token refresh)

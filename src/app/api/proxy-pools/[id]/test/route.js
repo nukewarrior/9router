@@ -43,6 +43,13 @@ export async function POST(request, { params }) {
       return NextResponse.json({ error: "Proxy pool not found" }, { status: 404 });
     }
 
+    if (proxyPool.type === "mihomo") {
+      return NextResponse.json(
+        { error: "Managed Mihomo proxy pools cannot be tested individually; use Mihomo Sync Now" },
+        { status: 409 },
+      );
+    }
+
     const result = proxyPool.type === "vercel" || proxyPool.type === "cloudflare" || proxyPool.type === "deno"
       ? await testVercelRelay(proxyPool.proxyUrl)
       : await testProxyUrl({ proxyUrl: proxyPool.proxyUrl });

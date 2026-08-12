@@ -45,6 +45,11 @@ function normalizeProxyPoolUpdate(body = {}) {
   return { updates };
 }
 
+function isManagedMihomoUpdate(existing, body = {}) {
+  if (existing?.type !== "mihomo") return false;
+  return Object.keys(body).some((key) => key !== "isActive");
+}
+
 function countBoundConnections(connections = [], proxyPoolId) {
   return connections.filter((connection) => connection?.providerSpecificData?.proxyPoolId === proxyPoolId).length;
 }
@@ -77,6 +82,12 @@ export async function PUT(request, { params }) {
     }
 
     const body = await request.json();
+    if (isManagedMihomoUpdate(existing, body)) {
+      return NextResponse.json(
+        { error: "Managed Mihomo proxy pools are read-only except for isActive" },
+        { status: 400 },
+      );
+    }
     const normalized = normalizeProxyPoolUpdate(body);
 
     if (normalized.error) {
@@ -99,6 +110,13 @@ export async function DELETE(request, { params }) {
 
     if (!existing) {
       return NextResponse.json({ error: "Proxy pool not found" }, { status: 404 });
+    }
+
+    if (existing.type === "mihomo") {
+      return NextResponse.json(
+        { error: "Managed Mihomo proxy pools cannot be deleted; disable the integration instead" },
+        { status: 409 },
+      );
     }
 
     const connections = await getProviderConnections();

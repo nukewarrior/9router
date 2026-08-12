@@ -5,6 +5,9 @@ import { stringifyJson, parseJson } from "./helpers/jsonCol.js";
 // Settings
 export {
   getSettings, updateSettings, isCloudEnabled, getCloudUrl, exportSettings,
+  getMihomoControllerConfig, updateMihomoControllerConfig,
+  updateMihomoControllerStatus, sanitizeMihomoControllerConfig,
+  getMihomoControllerStatus,
 } from "./repos/settingsRepo.js";
 
 // Provider connections
@@ -25,6 +28,7 @@ export {
 export {
   getProxyPools, getProxyPoolById,
   createProxyPool, updateProxyPool, deleteProxyPool,
+  syncMihomoProxyPools, markMihomoPoolsUnavailable,
 } from "./repos/proxyPoolsRepo.js";
 
 // API keys

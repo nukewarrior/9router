@@ -100,6 +100,90 @@ describe("no-auth proxy-pool rate-limit fallback", () => {
     expect(proxyMocks.pickProxyPoolId).toHaveBeenLastCalledWith(["pool-b"], "round-robin", "opencode");
   });
 
+  it("excludes unavailable Mihomo sources and propagates strict routing metadata", async () => {
+    const pools = [
+      { ...makePool("pool-a"), type: "mihomo", sourceAvailable: false },
+      { ...makePool("pool-b"), type: "mihomo", sourceAvailable: true },
+    ];
+    installPoolStore(pools);
+    const mihomoRouting = {
+      poolId: "pool-b",
+      controllerId: "controller-1",
+      providerName: "airport",
+      nodeName: "Node B",
+      selectorName: "9Router",
+      sourceAvailable: true,
+    };
+    proxyMocks.resolveConnectionProxyConfig.mockResolvedValueOnce({
+      connectionProxyEnabled: true,
+      connectionProxyUrl: "http://127.0.0.1:7890",
+      connectionNoProxy: "",
+      proxyPoolId: "pool-b",
+      strictProxy: true,
+      mihomoRouting,
+      vercelRelayUrl: "",
+    });
+
+    const credentials = await getProviderCredentials("opencode", null, "deepseek-v4-flash-free");
+
+    expect(proxyMocks.pickProxyPoolId).toHaveBeenCalledWith(["pool-b"], "round-robin", "opencode");
+    expect(credentials.providerSpecificData).toMatchObject({
+      connectionProxyPoolId: "pool-b",
+      strictProxy: true,
+      mihomoRouting,
+    });
+  });
+
+  it("fails closed when every synchronized Mihomo source is unavailable", async () => {
+    const pools = [
+      { ...makePool("pool-a"), type: "mihomo", sourceAvailable: false },
+      { ...makePool("pool-b"), type: "mihomo", sourceAvailable: false },
+    ];
+    installPoolStore(pools);
+
+    const credentials = await getProviderCredentials("opencode", null, "deepseek-v4-flash-free");
+
+    expect(credentials).toMatchObject({
+      allRateLimited: true,
+      lastErrorCode: 503,
+      lastError: "All synchronized Mihomo proxy nodes are unavailable",
+    });
+    expect(proxyMocks.resolveConnectionProxyConfig).not.toHaveBeenCalled();
+  });
+
+  it("keeps an active Mihomo pool with a missing mixed URL strict", async () => {
+    installPoolStore([{
+      ...makePool("pool-a"),
+      type: "mihomo",
+      proxyUrl: "",
+      sourceAvailable: true,
+    }]);
+    proxyMocks.resolveConnectionProxyConfig.mockResolvedValueOnce({
+      connectionProxyEnabled: true,
+      connectionProxyUrl: "",
+      connectionNoProxy: "",
+      proxyPoolId: "pool-a",
+      strictProxy: true,
+      mihomoRouting: {
+        poolId: "pool-a",
+        controllerId: "controller-1",
+        providerName: "airport",
+        nodeName: "Node A",
+        selectorName: "primary",
+        sourceAvailable: true,
+      },
+      vercelRelayUrl: "",
+    });
+
+    const credentials = await getProviderCredentials("opencode", null, "deepseek-v4-flash-free");
+
+    expect(credentials.providerSpecificData).toMatchObject({
+      connectionProxyPoolId: "pool-a",
+      strictProxy: true,
+    });
+    expect(proxyMocks.resolveConnectionProxyConfig).toHaveBeenCalledWith({ proxyPoolId: "pool-a" });
+  });
+
   it("treats FreeUsageLimitError as a rate limit and skips the cooled pool", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-13T00:00:00.000Z"));

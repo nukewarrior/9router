@@ -27,6 +27,120 @@ function normalizeFormData(data = {}) {
   };
 }
 
+const DEFAULT_MIHOMO_CONFIG = {
+  id: null,
+  enabled: false,
+  controllerUrl: "",
+  proxyUrl: "",
+  selectorName: "",
+  providerNames: [],
+  syncIntervalMinutes: 5,
+  secretConfigured: false,
+};
+
+const DEFAULT_MIHOMO_STATUS = {
+  lastSyncAt: null,
+  lastSyncError: null,
+  lastSyncSummary: null,
+};
+
+function normalizeMihomoConfig(data = {}) {
+  data = data || {};
+  const interval = Number(data.syncIntervalMinutes);
+  return {
+    ...DEFAULT_MIHOMO_CONFIG,
+    ...data,
+    id: data.id || null,
+    enabled: data.enabled === true,
+    controllerUrl: typeof data.controllerUrl === "string" ? data.controllerUrl : "",
+    proxyUrl: typeof data.proxyUrl === "string" ? data.proxyUrl : "",
+    selectorName: typeof data.selectorName === "string" ? data.selectorName : "",
+    providerNames: Array.isArray(data.providerNames)
+      ? data.providerNames.filter((name) => typeof name === "string")
+      : [],
+    syncIntervalMinutes: Number.isFinite(interval)
+      ? Math.min(1440, Math.max(1, Math.round(interval)))
+      : 5,
+    secretConfigured: data.secretConfigured === true,
+  };
+}
+
+function normalizeMihomoStatus(data = {}) {
+  data = data || {};
+  return {
+    ...DEFAULT_MIHOMO_STATUS,
+    ...data,
+    lastSyncAt: data.lastSyncAt || null,
+    lastSyncError: data.lastSyncError || null,
+    lastSyncSummary: data.lastSyncSummary || null,
+  };
+}
+
+function isMihomoPool(pool) {
+  return pool?.type === "mihomo";
+}
+
+function getMihomoBooleanLabel(value, trueLabel, falseLabel) {
+  if (value === true) return trueLabel;
+  if (value === false) return falseLabel;
+  return "unknown";
+}
+
+function getMihomoBooleanVariant(value) {
+  if (value === true) return "success";
+  if (value === false) return "error";
+  return "default";
+}
+
+function getPreviewItemLabel(item) {
+  if (typeof item === "string") return item;
+  if (!item || typeof item !== "object") return String(item || "Unknown");
+
+  const providerName = item.providerName || item.provider || "";
+  const nodeName = item.nodeName || item.node || item.name || "";
+  const type = item.type ? ` (${item.type})` : "";
+  const reason = item.reason || item.error || item.message;
+  const label = [providerName, nodeName].filter(Boolean).join(" / ") || item.name || "Unknown";
+  return `${label}${type}${reason ? ` — ${reason}` : ""}`;
+}
+
+function getSummaryCount(summary, key) {
+  const value = Number(summary?.[key]);
+  if (!Number.isFinite(value) && key === "unavailable") {
+    const markedUnavailable = Number(summary?.markedUnavailable);
+    return Number.isFinite(markedUnavailable) ? markedUnavailable : 0;
+  }
+  return Number.isFinite(value) ? value : 0;
+}
+
+function MihomoPreviewList({ items = [], emptyText }) {
+  const list = Array.isArray(items) ? items : [];
+  return (
+    <div className="rounded-lg border border-border-subtle bg-bg p-3">
+      <ul className="flex max-h-40 flex-col gap-2 overflow-y-auto text-xs">
+        {list.length > 0 ? list.map((item, index) => {
+          const alive = item && typeof item === "object" ? item.alive : undefined;
+          return (
+            <li key={`${getPreviewItemLabel(item)}-${index}`} className="flex min-w-0 items-start gap-2">
+              <span className="material-symbols-outlined mt-0.5 text-[14px] text-text-muted" aria-hidden="true">
+                {alive === true ? "check_circle" : alive === false ? "cancel" : "info"}
+              </span>
+              <span className="min-w-0 flex-1 break-words text-text-main">{getPreviewItemLabel(item)}</span>
+              {alive !== undefined && (
+                <Badge variant={getMihomoBooleanVariant(alive)} size="sm">
+                  {getMihomoBooleanLabel(alive, "alive", "unavailable")}
+                </Badge>
+              )}
+            </li>
+          );
+        }) : (
+          <li className="text-text-muted">{emptyText}</li>
+        )}
+      </ul>
+    </div>
+  );
+}
+
 export default function ProxyPoolsPage() {
   const [proxyPools, setProxyPools] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -51,6 +165,28 @@ export default function ProxyPoolsPage() {
   const [healthProgress, setHealthProgress] = useState({ current: 0, total: 0 });
   const [bulkBusy, setBulkBusy] = useState(false);
   const [confirmState, setConfirmState] = useState(null);
+  const [mihomoConfig, setMihomoConfig] = useState(DEFAULT_MIHOMO_CONFIG);
+  const [mihomoStatus, setMihomoStatus] = useState(DEFAULT_MIHOMO_STATUS);
+  const [mihomoSummary, setMihomoSummary] = useState(null);
+  const [mihomoForm, setMihomoForm] = useState({
+    controllerUrl: "",
+    secret: "",
+    proxyUrl: "",
+    selectorName: "",
+    providerNames: [],
+    syncIntervalMinutes: "5",
+  });
+  const [mihomoProviders, setMihomoProviders] = useState([]);
+  const [mihomoSelectors, setMihomoSelectors] = useState([]);
+  const [mihomoPreview, setMihomoPreview] = useState(null);
+  const [mihomoVersion, setMihomoVersion] = useState(null);
+  const [mihomoLoading, setMihomoLoading] = useState(true);
+  const [mihomoTesting, setMihomoTesting] = useState(false);
+  const [mihomoSaving, setMihomoSaving] = useState(false);
+  const [mihomoSyncing, setMihomoSyncing] = useState(false);
+  const [mihomoDisabling, setMihomoDisabling] = useState(false);
+  const [mihomoClearSecret, setMihomoClearSecret] = useState(false);
+  const [mihomoError, setMihomoError] = useState("");
   const relayMenuRef = useRef(null);
   const notify = useNotificationStore();
 
@@ -81,8 +217,270 @@ export default function ProxyPoolsPage() {
   }, []);
 
   useEffect(() => {
-    fetchProxyPools();
+    const timeoutId = setTimeout(() => {
+      fetchProxyPools();
+    }, 0);
+    return () => clearTimeout(timeoutId);
   }, [fetchProxyPools]);
+
+  const fetchMihomoConfig = useCallback(async ({ silent = false } = {}) => {
+    setMihomoLoading(true);
+    try {
+      const res = await fetch("/api/proxy-pools/mihomo", { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+
+      if (res.status === 404) {
+        setMihomoConfig(DEFAULT_MIHOMO_CONFIG);
+        setMihomoStatus(DEFAULT_MIHOMO_STATUS);
+        setMihomoSummary(null);
+        setMihomoForm({
+          controllerUrl: "",
+          secret: "",
+          proxyUrl: "",
+          selectorName: "",
+          providerNames: [],
+          syncIntervalMinutes: "5",
+        });
+        setMihomoProviders([]);
+        setMihomoSelectors([]);
+        setMihomoPreview(null);
+        setMihomoVersion(null);
+        setMihomoError("");
+        return null;
+      }
+
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to load Mihomo configuration");
+      }
+
+      const config = normalizeMihomoConfig(data.config);
+      const status = normalizeMihomoStatus(data.status);
+      setMihomoConfig(config);
+      setMihomoStatus(status);
+      setMihomoSummary(status.lastSyncSummary);
+      setMihomoForm((prev) => ({
+        ...prev,
+        controllerUrl: config.controllerUrl,
+        proxyUrl: config.proxyUrl,
+        selectorName: config.selectorName,
+        providerNames: config.providerNames,
+        syncIntervalMinutes: String(config.syncIntervalMinutes),
+        secret: "",
+      }));
+      setMihomoClearSecret(false);
+      setMihomoError("");
+      return data;
+    } catch {
+      if (!silent) setMihomoError("Unable to load Mihomo Controller configuration.");
+      return null;
+    } finally {
+      setMihomoLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      fetchMihomoConfig();
+    }, 0);
+    return () => clearTimeout(timeoutId);
+  }, [fetchMihomoConfig]);
+
+  const applyMihomoResponse = (data = {}) => {
+    if (data.config) {
+      setMihomoConfig(normalizeMihomoConfig(data.config));
+    }
+    if (data.status) {
+      const status = normalizeMihomoStatus(data.status);
+      setMihomoStatus(status);
+      if (!data.summary) setMihomoSummary(status.lastSyncSummary);
+    }
+    if (data.summary) setMihomoSummary(data.summary);
+  };
+
+  const handleMihomoTest = async () => {
+    const controllerUrl = mihomoForm.controllerUrl.trim();
+    const proxyUrl = mihomoForm.proxyUrl.trim();
+    if (!controllerUrl || !proxyUrl) {
+      setMihomoError("Controller URL and mixed proxy URL are required before testing.");
+      return;
+    }
+
+    const firstProviderDiscovery = mihomoProviders.length === 0 && mihomoForm.providerNames.length === 0;
+    const payload = {
+      controllerUrl,
+      secret: mihomoForm.secret.trim(),
+      proxyUrl,
+    };
+    if (mihomoForm.selectorName.trim()) payload.selectorName = mihomoForm.selectorName.trim();
+    if (mihomoForm.providerNames.length > 0) payload.providerNames = mihomoForm.providerNames;
+
+    setMihomoTesting(true);
+    setMihomoError("");
+    try {
+      const res = await fetch("/api/proxy-pools/mihomo/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || "Mihomo connection test failed");
+      }
+
+      const providers = Array.isArray(data.providers) ? data.providers : [];
+      const selectors = Array.isArray(data.selectors) ? data.selectors : [];
+      setMihomoVersion(data.version || null);
+      setMihomoProviders(providers);
+      setMihomoSelectors(selectors);
+      setMihomoPreview(data.preview || null);
+      if (firstProviderDiscovery) {
+        setMihomoForm((prev) => ({
+          ...prev,
+          providerNames: providers
+            .map((provider) => provider?.name)
+            .filter((name) => typeof name === "string" && name.length > 0),
+        }));
+      }
+      if (!mihomoForm.selectorName.trim() && selectors.length === 1 && selectors[0]?.name) {
+        setMihomoForm((prev) => ({ ...prev, selectorName: selectors[0].name }));
+      }
+      notify.success("Mihomo connection test passed");
+    } catch (error) {
+      setMihomoError(error.message || "Mihomo connection test failed");
+      notify.error(error.message || "Mihomo connection test failed");
+    } finally {
+      setMihomoTesting(false);
+    }
+  };
+
+  const handleMihomoSync = async ({ notifyOnSuccess = true } = {}) => {
+    setMihomoSyncing(true);
+    setMihomoError("");
+    try {
+      const res = await fetch("/api/proxy-pools/mihomo/sync", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || "Mihomo sync failed");
+      }
+
+      applyMihomoResponse(data);
+      await Promise.all([
+        fetchMihomoConfig({ silent: true }),
+        fetchProxyPools(),
+      ]);
+      if (notifyOnSuccess) notify.success("Mihomo pools synchronized");
+      return data;
+    } catch (error) {
+      setMihomoError(error.message || "Mihomo sync failed");
+      if (notifyOnSuccess) notify.error(error.message || "Mihomo sync failed");
+      return null;
+    } finally {
+      setMihomoSyncing(false);
+    }
+  };
+
+  const handleMihomoSave = async () => {
+    const controllerUrl = mihomoForm.controllerUrl.trim();
+    const proxyUrl = mihomoForm.proxyUrl.trim();
+    const syncIntervalMinutes = Number(mihomoForm.syncIntervalMinutes);
+    if (!controllerUrl || !proxyUrl) {
+      setMihomoError("Controller URL and mixed proxy URL are required.");
+      return;
+    }
+    if (mihomoForm.providerNames.length === 0) {
+      setMihomoError("Select at least one provider after testing the connection.");
+      return;
+    }
+    if (!mihomoForm.selectorName.trim()) {
+      setMihomoError("Select a Mihomo Selector after testing the connection.");
+      return;
+    }
+    if (!Number.isInteger(syncIntervalMinutes) || syncIntervalMinutes < 1 || syncIntervalMinutes > 1440) {
+      setMihomoError("Sync interval must be a whole number from 1 to 1440 minutes.");
+      return;
+    }
+
+    const payload = {
+      enabled: true,
+      controllerUrl,
+      proxyUrl,
+      selectorName: mihomoForm.selectorName.trim(),
+      providerNames: mihomoForm.providerNames,
+      syncIntervalMinutes,
+    };
+    const secret = mihomoForm.secret.trim();
+    if (secret) payload.secret = secret;
+    if (mihomoClearSecret) payload.clearSecret = true;
+
+    setMihomoSaving(true);
+    setMihomoError("");
+    try {
+      const res = await fetch("/api/proxy-pools/mihomo", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to save Mihomo configuration");
+      }
+
+      applyMihomoResponse(data);
+      if (!data.summary) {
+        const syncData = await handleMihomoSync({ notifyOnSuccess: false });
+        if (!syncData) throw new Error("Configuration saved, but Mihomo sync failed");
+      } else {
+        await Promise.all([
+          fetchMihomoConfig({ silent: true }),
+          fetchProxyPools(),
+        ]);
+      }
+      notify.success("Mihomo configuration saved and synchronized");
+    } catch (error) {
+      setMihomoError(error.message || "Failed to save Mihomo configuration");
+      notify.error(error.message || "Failed to save Mihomo configuration");
+    } finally {
+      setMihomoSaving(false);
+    }
+  };
+
+  const handleMihomoDisable = async () => {
+    if (!mihomoConfig.id) return;
+    setMihomoDisabling(true);
+    setMihomoError("");
+    try {
+      const res = await fetch("/api/proxy-pools/mihomo", { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to disable Mihomo Controller");
+      }
+      await Promise.all([
+        fetchMihomoConfig({ silent: true }),
+        fetchProxyPools(),
+      ]);
+      notify.success("Mihomo Controller disabled");
+    } catch (error) {
+      setMihomoError(error.message || "Failed to disable Mihomo Controller");
+      notify.error(error.message || "Failed to disable Mihomo Controller");
+    } finally {
+      setMihomoDisabling(false);
+    }
+  };
+
+  const toggleMihomoProvider = (providerName) => {
+    setMihomoForm((prev) => ({
+      ...prev,
+      providerNames: prev.providerNames.includes(providerName)
+        ? prev.providerNames.filter((name) => name !== providerName)
+        : [...prev.providerNames, providerName],
+    }));
+    setMihomoPreview(null);
+  };
+
+  const handleMihomoSelectorChange = (selectorName) => {
+    setMihomoForm((prev) => ({ ...prev, selectorName }));
+    setMihomoPreview(null);
+  };
 
   const resetForm = () => {
     setEditingProxyPool(null);
@@ -208,13 +606,17 @@ export default function ProxyPoolsPage() {
     }
   };
 
-  const allSelected = proxyPools.length > 0 && selectedIds.length === proxyPools.length;
+  const manageableProxyPools = useMemo(
+    () => proxyPools.filter((pool) => !isMihomoPool(pool)),
+    [proxyPools]
+  );
+  const allSelected = manageableProxyPools.length > 0 && selectedIds.length === manageableProxyPools.length;
   const toggleSelect = (id) => setSelectedIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
-  const toggleSelectAll = () => setSelectedIds(allSelected ? [] : proxyPools.map((p) => p.id));
+  const toggleSelectAll = () => setSelectedIds(allSelected ? [] : manageableProxyPools.map((p) => p.id));
   const clearSelection = () => setSelectedIds([]);
 
   const bulkSetActive = async (isActive) => {
-    const targets = selectedIds.length > 0 ? selectedIds : proxyPools.map((p) => p.id);
+    const targets = selectedIds.length > 0 ? selectedIds : manageableProxyPools.map((p) => p.id);
     if (targets.length === 0) return;
     setBulkBusy(true);
     try {
@@ -266,8 +668,8 @@ export default function ProxyPoolsPage() {
 
   const handleHealthCheck = async () => {
     const targets = selectedIds.length > 0
-      ? proxyPools.filter((p) => selectedIds.includes(p.id))
-      : proxyPools;
+      ? manageableProxyPools.filter((p) => selectedIds.includes(p.id))
+      : manageableProxyPools;
     if (targets.length === 0) return;
     setHealthChecking(true);
     setHealthProgress({ current: 0, total: targets.length });
@@ -329,8 +731,11 @@ export default function ProxyPoolsPage() {
 
   // Cleanup selectedIds when pools change
   useEffect(() => {
-    setSelectedIds((prev) => prev.filter((id) => proxyPools.some((p) => p.id === id)));
-  }, [proxyPools]);
+    const timeoutId = setTimeout(() => {
+      setSelectedIds((prev) => prev.filter((id) => manageableProxyPools.some((p) => p.id === id)));
+    }, 0);
+    return () => clearTimeout(timeoutId);
+  }, [manageableProxyPools]);
 
   const openBatchImportModal = () => {
     setBatchImportText("");
@@ -637,8 +1042,310 @@ export default function ProxyPoolsPage() {
       </div>
 
       <Card>
+        <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="material-symbols-outlined text-[22px] text-primary" aria-hidden="true">hub</span>
+              <h2 className="text-base font-semibold text-text-main sm:text-lg">Mihomo Controller</h2>
+              <Badge variant={mihomoConfig.enabled ? "success" : "default"} size="sm" dot>
+                {mihomoConfig.enabled ? "enabled" : "disabled"}
+              </Badge>
+            </div>
+            <p className="mt-1 text-xs text-text-muted">
+              Discover eligible Mihomo nodes and keep a managed Proxy Pool in sync.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              variant="secondary"
+              icon="sync"
+              onClick={() => handleMihomoSync()}
+              loading={mihomoSyncing}
+              disabled={!mihomoConfig.id || !mihomoConfig.enabled || mihomoSaving || mihomoTesting || mihomoDisabling}
+            >
+              Sync Now
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              icon="block"
+              onClick={handleMihomoDisable}
+              loading={mihomoDisabling}
+              disabled={!mihomoConfig.id || !mihomoConfig.enabled || mihomoSaving || mihomoTesting || mihomoSyncing}
+            >
+              Disable
+            </Button>
+          </div>
+        </div>
+
+        {mihomoLoading ? (
+          <div className="rounded-lg border border-border-subtle bg-bg px-3 py-4 text-sm text-text-muted" role="status">
+            Loading Mihomo Controller configuration…
+          </div>
+        ) : (
+          <div className="flex flex-col gap-5">
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor="mihomo-controller-url" className="text-sm font-medium text-text-main">
+                  Controller URL
+                </label>
+                <input
+                  id="mihomo-controller-url"
+                  name="controllerUrl"
+                  type="url"
+                  autoComplete="url"
+                  value={mihomoForm.controllerUrl}
+                  onChange={(e) => {
+                    setMihomoForm((prev) => ({ ...prev, controllerUrl: e.target.value }));
+                    setMihomoPreview(null);
+                  }}
+                  placeholder="http://127.0.0.1:9090"
+                  aria-describedby="mihomo-controller-url-hint"
+                  className="w-full rounded-[10px] border border-transparent bg-surface-2 px-3 py-2.5 text-[16px] text-text-main placeholder-text-muted/70 transition-all focus:border-brand-500/40 focus:outline-none focus:ring-2 focus:ring-brand-500/30 sm:text-sm"
+                />
+                <p id="mihomo-controller-url-hint" className="text-xs text-text-muted">
+                  Mihomo external controller endpoint.
+                </p>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor="mihomo-proxy-url" className="text-sm font-medium text-text-main">
+                  Mixed proxy URL
+                </label>
+                <input
+                  id="mihomo-proxy-url"
+                  name="proxyUrl"
+                  type="url"
+                  autoComplete="url"
+                  value={mihomoForm.proxyUrl}
+                  onChange={(e) => {
+                    setMihomoForm((prev) => ({ ...prev, proxyUrl: e.target.value }));
+                    setMihomoPreview(null);
+                  }}
+                  placeholder="http://127.0.0.1:7890"
+                  aria-describedby="mihomo-proxy-url-hint"
+                  className="w-full rounded-[10px] border border-transparent bg-surface-2 px-3 py-2.5 text-[16px] text-text-main placeholder-text-muted/70 transition-all focus:border-brand-500/40 focus:outline-none focus:ring-2 focus:ring-brand-500/30 sm:text-sm"
+                />
+                <p id="mihomo-proxy-url-hint" className="text-xs text-text-muted">
+                  The local mixed port used by managed pools.
+                </p>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor="mihomo-secret" className="text-sm font-medium text-text-main">
+                  Secret
+                </label>
+                <input
+                  id="mihomo-secret"
+                  name="secret"
+                  type="password"
+                  autoComplete="new-password"
+                  value={mihomoForm.secret}
+                  onChange={(e) => {
+                    setMihomoForm((prev) => ({ ...prev, secret: e.target.value }));
+                    if (e.target.value) setMihomoClearSecret(false);
+                    setMihomoPreview(null);
+                  }}
+                  placeholder={mihomoConfig.secretConfigured ? "Leave blank to keep current secret" : "Optional controller secret"}
+                  aria-describedby="mihomo-secret-hint"
+                  className="w-full rounded-[10px] border border-transparent bg-surface-2 px-3 py-2.5 text-[16px] text-text-main placeholder-text-muted/70 transition-all focus:border-brand-500/40 focus:outline-none focus:ring-2 focus:ring-brand-500/30 sm:text-sm"
+                />
+                <p id="mihomo-secret-hint" className="text-xs text-text-muted">
+                  {mihomoConfig.secretConfigured
+                    ? "A stored secret is configured. Leave this empty to preserve it."
+                    : "Secret is never shown after it is saved."}
+                </p>
+                {mihomoConfig.secretConfigured && (
+                  <label className="mt-1 flex cursor-pointer items-center gap-2 text-xs text-text-muted">
+                    <input
+                      type="checkbox"
+                      checked={mihomoClearSecret}
+                      onChange={(e) => setMihomoClearSecret(e.target.checked)}
+                      className="size-4 rounded border-black/20 dark:border-white/20"
+                    />
+                    Clear stored secret
+                  </label>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor="mihomo-sync-interval" className="text-sm font-medium text-text-main">
+                  Sync interval (minutes)
+                </label>
+                <input
+                  id="mihomo-sync-interval"
+                  name="syncIntervalMinutes"
+                  type="number"
+                  min="1"
+                  max="1440"
+                  step="1"
+                  inputMode="numeric"
+                  value={mihomoForm.syncIntervalMinutes}
+                  onChange={(e) => setMihomoForm((prev) => ({ ...prev, syncIntervalMinutes: e.target.value }))}
+                  aria-describedby="mihomo-sync-interval-hint"
+                  className="w-full rounded-[10px] border border-transparent bg-surface-2 px-3 py-2.5 text-[16px] text-text-main placeholder-text-muted/70 transition-all focus:border-brand-500/40 focus:outline-none focus:ring-2 focus:ring-brand-500/30 sm:text-sm"
+                />
+                <p id="mihomo-sync-interval-hint" className="text-xs text-text-muted">Choose a whole number from 1 to 1440. Default: 5.</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <fieldset className="min-w-0 rounded-lg border border-border-subtle p-3">
+                <legend className="px-1 text-sm font-medium text-text-main">Providers</legend>
+                <p className="mb-3 text-xs text-text-muted">
+                  {mihomoForm.providerNames.length > 0
+                    ? `${mihomoForm.providerNames.length} provider(s) selected`
+                    : "Select one or more discovered providers."}
+                </p>
+                {mihomoProviders.length > 0 ? (
+                  <div className="grid max-h-48 grid-cols-1 gap-2 overflow-y-auto sm:grid-cols-2">
+                    {mihomoProviders.map((provider, index) => {
+                      const providerName = provider?.name;
+                      if (!providerName) return null;
+                      return (
+                        <label
+                          key={`${providerName}-${index}`}
+                          className="flex min-w-0 cursor-pointer items-start gap-2 rounded-lg bg-bg px-2.5 py-2 text-sm hover:bg-surface-2"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={mihomoForm.providerNames.includes(providerName)}
+                            onChange={() => toggleMihomoProvider(providerName)}
+                            className="mt-0.5 size-4 shrink-0 rounded border-black/20 dark:border-white/20"
+                          />
+                          <span className="min-w-0">
+                            <span className="block truncate text-text-main">{providerName}</span>
+                            <span className="block text-[11px] text-text-muted">
+                              {provider.vehicleType || "provider"} · {provider.nodeCount ?? provider.nodes?.length ?? 0} node(s)
+                            </span>
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="rounded-lg bg-bg px-3 py-3 text-xs text-text-muted">
+                    Test the connection to discover available providers.
+                  </p>
+                )}
+              </fieldset>
+
+              <div className="flex min-w-0 flex-col gap-1.5">
+                <label htmlFor="mihomo-selector" className="text-sm font-medium text-text-main">Selector</label>
+                <select
+                  id="mihomo-selector"
+                  name="selectorName"
+                  value={mihomoForm.selectorName}
+                  onChange={(e) => handleMihomoSelectorChange(e.target.value)}
+                  className="w-full rounded-[10px] border border-transparent bg-surface-2 px-3 py-2.5 text-[16px] text-text-main transition-all focus:border-brand-500/40 focus:outline-none focus:ring-2 focus:ring-brand-500/30 sm:text-sm"
+                >
+                  <option value="">Use controller default</option>
+                  {mihomoForm.selectorName && !mihomoSelectors.some((selector) => selector?.name === mihomoForm.selectorName) && (
+                    <option value={mihomoForm.selectorName}>{mihomoForm.selectorName}</option>
+                  )}
+                  {mihomoSelectors.map((selector, index) => (
+                    <option key={`${selector?.name || "selector"}-${index}`} value={selector?.name || ""}>
+                      {selector?.name || "Unnamed selector"}{selector?.now ? ` · ${selector.now}` : ""}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-text-muted">Optional selector used when choosing the source node.</p>
+                {mihomoSelectors.length === 0 && (
+                  <p className="rounded-lg bg-bg px-3 py-3 text-xs text-text-muted">
+                    Test the connection to discover selectors.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-3 rounded-lg border border-border-subtle bg-bg p-3">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h3 className="text-sm font-semibold text-text-main">Connection and node preview</h3>
+                  <p className="text-xs text-text-muted">
+                    {mihomoVersion?.version ? `Mihomo ${mihomoVersion.version}` : "Run a test after changing providers or selector to refresh the preview."}
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  icon="science"
+                  onClick={handleMihomoTest}
+                  loading={mihomoTesting}
+                  disabled={mihomoSaving || mihomoSyncing || mihomoDisabling || !mihomoForm.controllerUrl.trim() || !mihomoForm.proxyUrl.trim()}
+                >
+                  Test Connection
+                </Button>
+              </div>
+              {mihomoPreview ? (
+                <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+                  <div className="min-w-0">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <h4 className="text-xs font-semibold uppercase tracking-wide text-text-muted">Eligible</h4>
+                      <Badge variant="success" size="sm">{mihomoPreview.eligible?.length || 0}</Badge>
+                    </div>
+                    <MihomoPreviewList items={mihomoPreview.eligible} emptyText="No eligible nodes" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <h4 className="text-xs font-semibold uppercase tracking-wide text-text-muted">Duplicates</h4>
+                      <Badge variant="warning" size="sm">{mihomoPreview.duplicates?.length || 0}</Badge>
+                    </div>
+                    <MihomoPreviewList items={mihomoPreview.duplicates} emptyText="No duplicates" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <h4 className="text-xs font-semibold uppercase tracking-wide text-text-muted">Excluded</h4>
+                      <Badge variant="default" size="sm">{mihomoPreview.excluded?.length || 0}</Badge>
+                    </div>
+                    <MihomoPreviewList items={mihomoPreview.excluded} emptyText="No excluded nodes" />
+                  </div>
+                </div>
+              ) : (
+                <p className="text-xs text-text-muted">No preview yet.</p>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+              {["created", "updated", "unavailable", "excluded", "eligible", "duplicates"].map((key) => (
+                <div key={key} className="rounded-lg border border-border-subtle bg-bg px-3 py-2">
+                  <p className="text-[11px] uppercase tracking-wide text-text-muted">{key}</p>
+                  <p className="mt-1 text-lg font-semibold text-text-main">{getSummaryCount(mihomoSummary, key)}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex flex-col gap-2 rounded-lg border border-border-subtle px-3 py-3 text-xs sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-5">
+              <span className="text-text-muted">Enabled: <strong className="text-text-main">{mihomoConfig.enabled ? "yes" : "no"}</strong></span>
+              <span className="text-text-muted">Last sync: <strong className="text-text-main">{formatDateTime(mihomoStatus.lastSyncAt)}</strong></span>
+              {mihomoConfig.secretConfigured && <Badge variant="success" size="sm" icon="key">Secret configured</Badge>}
+            </div>
+
+            {(mihomoError || mihomoStatus.lastSyncError) && (
+              <p className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 text-sm text-red-600 dark:text-red-400" role="alert">
+                {mihomoError || mihomoStatus.lastSyncError}
+              </p>
+            )}
+
+            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+              <Button
+                fullWidth
+                className="sm:w-auto"
+                onClick={handleMihomoSave}
+                loading={mihomoSaving}
+                disabled={mihomoLoading || mihomoTesting || mihomoSyncing || mihomoDisabling || !mihomoForm.controllerUrl.trim() || !mihomoForm.proxyUrl.trim()}
+              >
+                Save &amp; Sync
+              </Button>
+            </div>
+          </div>
+        )}
+      </Card>
+
+      <Card>
         <div className="mb-4 flex flex-wrap items-center gap-2">
-          {proxyPools.length > 0 && (
+          {manageableProxyPools.length > 0 && (
             <label className="flex items-center gap-1.5 text-xs text-text-muted cursor-pointer">
               <input
                 type="checkbox"
@@ -664,7 +1371,7 @@ export default function ProxyPoolsPage() {
                 size="sm"
                 icon={healthChecking ? "progress_activity" : "health_and_safety"}
                 onClick={handleHealthCheck}
-                disabled={healthChecking || bulkBusy || proxyPools.length === 0}
+                disabled={healthChecking || bulkBusy || manageableProxyPools.length === 0}
               >
                 {healthChecking ? `Checking ${healthProgress.current}/${healthProgress.total}` : "Health Check"}
               </Button>
@@ -698,82 +1405,126 @@ export default function ProxyPoolsPage() {
           </div>
         ) : (
           <div className="flex flex-col divide-y divide-black/[0.04] dark:divide-white/[0.05]">
-            {proxyPools.map((pool) => (
-              <div key={pool.id} className="flex flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex items-start gap-3 min-w-0 flex-1">
-                  <input
-                    type="checkbox"
-                    checked={selectedIds.includes(pool.id)}
-                    onChange={() => toggleSelect(pool.id)}
-                    className="mt-1 size-4 shrink-0 rounded border-black/20 dark:border-white/20"
-                  />
-                  <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <p className="min-w-0 max-w-full truncate text-sm font-medium sm:max-w-[18rem]">{pool.name}</p>
-                    <Badge variant={getStatusVariant(pool.testStatus)} size="sm" dot>
-                      {pool.testStatus || "unknown"}
-                    </Badge>
-                    <Badge variant={pool.isActive ? "success" : "default"} size="sm">
-                      {pool.isActive ? "active" : "inactive"}
-                    </Badge>
-                    {pool.type === "vercel" && (
-                      <Badge variant="default" size="sm">vercel relay</Badge>
+            {proxyPools.map((pool) => {
+              const mihomoPool = isMihomoPool(pool);
+              return (
+                <div key={pool.id} className="flex flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex min-w-0 flex-1 items-start gap-3">
+                    {!mihomoPool && (
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.includes(pool.id)}
+                        onChange={() => toggleSelect(pool.id)}
+                        aria-label={`Select ${pool.name}`}
+                        className="mt-1 size-4 shrink-0 rounded border-black/20 dark:border-white/20"
+                      />
                     )}
-                    {pool.type === "cloudflare" && (
-                      <Badge variant="default" size="sm">cloudflare relay</Badge>
-                    )}
-                    <Badge variant="default" size="sm">
-                      {pool.boundConnectionCount || 0} bound
-                    </Badge>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="min-w-0 max-w-full truncate text-sm font-medium sm:max-w-[18rem]">{pool.name}</p>
+                        {mihomoPool ? (
+                          <>
+                            <Badge variant="primary" size="sm">mihomo managed</Badge>
+                            <Badge variant={getMihomoBooleanVariant(pool.sourceAlive)} size="sm" dot>
+                              source {getMihomoBooleanLabel(pool.sourceAlive, "alive", "unavailable")}
+                            </Badge>
+                            <Badge variant={getMihomoBooleanVariant(pool.sourceAvailable)} size="sm">
+                              {getMihomoBooleanLabel(pool.sourceAvailable, "source available", "source unavailable")}
+                            </Badge>
+                            <Badge variant={pool.isActive ? "success" : "default"} size="sm">
+                              {pool.isActive ? "active" : "inactive"}
+                            </Badge>
+                            {pool.strictProxy === true && <Badge variant="warning" size="sm">strict proxy</Badge>}
+                          </>
+                        ) : (
+                          <>
+                            <Badge variant={getStatusVariant(pool.testStatus)} size="sm" dot>
+                              {pool.testStatus || "unknown"}
+                            </Badge>
+                            <Badge variant={pool.isActive ? "success" : "default"} size="sm">
+                              {pool.isActive ? "active" : "inactive"}
+                            </Badge>
+                            {pool.type === "vercel" && (
+                              <Badge variant="default" size="sm">vercel relay</Badge>
+                            )}
+                            {pool.type === "cloudflare" && (
+                              <Badge variant="default" size="sm">cloudflare relay</Badge>
+                            )}
+                          </>
+                        )}
+                        <Badge variant="default" size="sm">
+                          {pool.boundConnectionCount || 0} bound
+                        </Badge>
+                      </div>
+                      <p className="mt-1 truncate text-xs text-text-muted">Proxy URL: {pool.proxyUrl}</p>
+                      {mihomoPool ? (
+                        <div className="mt-1 flex flex-col gap-0.5 text-[11px] text-text-muted">
+                          <p className="break-words">Source: {pool.controllerId || "Mihomo Controller"} · Provider: {pool.providerName || "—"} · Node: {pool.nodeName || "—"}</p>
+                          <p className="break-words">Selector: {pool.selectorName || "—"} · Last seen: {formatDateTime(pool.lastSeenAt)}</p>
+                        </div>
+                      ) : (
+                        <>
+                          {pool.noProxy ? (
+                            <p className="mt-1 truncate text-xs text-text-muted">No proxy: {pool.noProxy}</p>
+                          ) : null}
+                          <p className="mt-1 text-[11px] text-text-muted">
+                            Last tested: {formatDateTime(pool.lastTestedAt)}
+                            {pool.lastError ? ` · ${pool.lastError}` : ""}
+                          </p>
+                        </>
+                      )}
+                    </div>
                   </div>
-                  <p className="text-xs text-text-muted truncate mt-1">{pool.proxyUrl}</p>
-                  {pool.noProxy ? (
-                    <p className="text-xs text-text-muted truncate">No proxy: {pool.noProxy}</p>
-                  ) : null}
-                  <p className="text-[11px] text-text-muted mt-1">
-                    Last tested: {formatDateTime(pool.lastTestedAt)}
-                    {pool.lastError ? ` · ${pool.lastError}` : ""}
-                  </p>
-                  </div>
-                </div>
 
-                <div className="flex items-center justify-end gap-1">
-                  <Toggle
-                    size="sm"
-                    checked={pool.isActive === true}
-                    onChange={() => handleToggleActive(pool)}
-                    title={pool.isActive ? "Disable" : "Enable"}
-                  />
-                  <button
-                    onClick={() => handleTest(pool.id)}
-                    className="p-2 rounded hover:bg-black/5 dark:hover:bg-white/5 text-text-muted hover:text-primary"
-                    title="Test proxy"
-                    disabled={testingId === pool.id}
-                  >
-                    <span
-                      className="material-symbols-outlined text-[18px]"
-                      style={testingId === pool.id ? { animation: "spin 1s linear infinite" } : undefined}
-                    >
-                      {testingId === pool.id ? "progress_activity" : "science"}
-                    </span>
-                  </button>
-                  <button
-                    onClick={() => openEditModal(pool)}
-                    className="p-2 rounded hover:bg-black/5 dark:hover:bg-white/5 text-text-muted hover:text-primary"
-                    title="Edit"
-                  >
-                    <span className="material-symbols-outlined text-[18px]">edit</span>
-                  </button>
-                  <button
-                    onClick={() => handleDelete(pool)}
-                    className="p-2 rounded hover:bg-red-500/10 text-red-500"
-                    title="Delete"
-                  >
-                    <span className="material-symbols-outlined text-[18px]">delete</span>
-                  </button>
+                  <div className="flex items-center justify-end gap-1">
+                    <Toggle
+                      size="sm"
+                      checked={pool.isActive === true}
+                      onChange={() => handleToggleActive(pool)}
+                      label={mihomoPool ? (pool.isActive ? "Active" : "Inactive") : undefined}
+                    />
+                    {!mihomoPool && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => handleTest(pool.id)}
+                          className="rounded p-2 text-text-muted hover:bg-black/5 hover:text-primary dark:hover:bg-white/5"
+                          title="Test proxy"
+                          aria-label={`Test ${pool.name}`}
+                          disabled={testingId === pool.id}
+                        >
+                          <span
+                            className="material-symbols-outlined text-[18px]"
+                            style={testingId === pool.id ? { animation: "spin 1s linear infinite" } : undefined}
+                            aria-hidden="true"
+                          >
+                            {testingId === pool.id ? "progress_activity" : "science"}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openEditModal(pool)}
+                          className="rounded p-2 text-text-muted hover:bg-black/5 hover:text-primary dark:hover:bg-white/5"
+                          title="Edit"
+                          aria-label={`Edit ${pool.name}`}
+                        >
+                          <span className="material-symbols-outlined text-[18px]" aria-hidden="true">edit</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDelete(pool)}
+                          className="rounded p-2 text-red-500 hover:bg-red-500/10"
+                          title="Delete"
+                          aria-label={`Delete ${pool.name}`}
+                        >
+                          <span className="material-symbols-outlined text-[18px]" aria-hidden="true">delete</span>
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </Card>
@@ -895,7 +1646,7 @@ export default function ProxyPoolsPage() {
             value={cloudflareForm.apiToken}
             onChange={(e) => setCloudflareForm((prev) => ({ ...prev, apiToken: e.target.value }))}
             placeholder="your-cloudflare-api-token"
-            hint={<>Requires "Workers Scripts: Edit" permission. <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Get token →</a></>}
+            hint={<>Requires &quot;Workers Scripts: Edit&quot; permission. <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Get token →</a></>}
             type="password"
           />
           <Input

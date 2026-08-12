@@ -1,6 +1,7 @@
 import { Readable } from "stream";
 import { MEMORY_CONFIG } from "../config/runtimeConfig.js";
 import { dbg } from "./debugLog.js";
+import { withMihomoSelection } from "@/lib/network/mihomoController.js";
 
 const originalFetch = globalThis.fetch;
 const proxyDispatchers = new Map();
@@ -216,20 +217,54 @@ function resolveConnectionProxyUrl(targetUrl, proxyOptions) {
 /**
  * Create proxy dispatcher lazily (undici-compatible)
  */
-async function getDispatcher(proxyUrl) {
+function closeDispatcher(dispatcher) {
+  if (!dispatcher || typeof dispatcher.close !== "function") return;
+  try {
+    Promise.resolve(dispatcher.close()).catch(() => { });
+  } catch {
+    // Eviction is best-effort and must not break the active request.
+  }
+}
+
+async function getDispatcher(proxyUrl, cacheScope = null) {
   const normalized = normalizeProxyUrl(proxyUrl);
   if (!normalized) return null;
 
-  if (!proxyDispatchers.has(normalized)) {
+  const cacheKey = cacheScope ? `${cacheScope}\u0000${normalized}` : normalized;
+
+  if (!proxyDispatchers.has(cacheKey)) {
     // Evict oldest entry if max size reached
     if (proxyDispatchers.size >= MEMORY_CONFIG.proxyDispatchersMaxSize) {
-      proxyDispatchers.delete(proxyDispatchers.keys().next().value);
+      const oldestKey = proxyDispatchers.keys().next().value;
+      const oldestDispatcher = proxyDispatchers.get(oldestKey);
+      proxyDispatchers.delete(oldestKey);
+      closeDispatcher(oldestDispatcher);
     }
     const { ProxyAgent } = await import("undici");
-    proxyDispatchers.set(normalized, new ProxyAgent({ uri: normalized }));
+    proxyDispatchers.set(cacheKey, new ProxyAgent({ uri: normalized }));
+  } else {
+    // Map insertion order is used as a bounded LRU; touching a hit moves it
+    // to the newest position without replacing the active Agent.
+    const dispatcher = proxyDispatchers.get(cacheKey);
+    proxyDispatchers.delete(cacheKey);
+    proxyDispatchers.set(cacheKey, dispatcher);
   }
 
-  return proxyDispatchers.get(normalized);
+  return proxyDispatchers.get(cacheKey);
+}
+
+async function fetchThroughProxy(url, options, proxyUrl, proxyOptions) {
+  const mihomoRouting = proxyOptions?.mihomoRouting || null;
+  const execute = async () => {
+    const cacheScope = mihomoRouting?.poolId
+      ? `mihomo:${mihomoRouting.poolId}`
+      : null;
+    const dispatcher = await getDispatcher(proxyUrl, cacheScope);
+    return originalFetch(url, { ...options, dispatcher });
+  };
+
+  if (!mihomoRouting) return execute();
+  return withMihomoSelection(mihomoRouting, execute);
 }
 
 /**
@@ -293,10 +328,14 @@ async function createBypassRequest(parsedUrl, realIP, options) {
 
 export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
   const targetUrl = typeof url === "string" ? url : url.toString();
+  const mihomoRouting = proxyOptions?.mihomoRouting || null;
 
   // Vercel relay: forward request via relay headers
   const vercelRelayUrl = normalizeString(proxyOptions?.vercelRelayUrl);
   if (vercelRelayUrl) {
+    if (mihomoRouting) {
+      throw new Error("[ProxyFetch] Invalid Mihomo route: relay and mixed proxy cannot be combined");
+    }
     const parsed = new URL(targetUrl);
     const relayHeaders = {
       ...options.headers,
@@ -307,6 +346,9 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
   }
 
   const connectionProxyUrl = resolveConnectionProxyUrl(targetUrl, proxyOptions);
+  if (mihomoRouting && (mihomoRouting.sourceAvailable === false || !connectionProxyUrl)) {
+    throw new Error("[ProxyFetch] Mihomo proxy route is unavailable; direct fallback is disabled");
+  }
   const envProxyUrl = connectionProxyUrl ? null : normalizeProxyUrl(getEnvProxyUrl(targetUrl));
   const proxyUrl = connectionProxyUrl || envProxyUrl;
 
@@ -315,10 +357,9 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
     if (proxyUrl) {
       // Proxy resolves DNS externally (not affected by /etc/hosts) — use proxy directly
       try {
-        const dispatcher = await getDispatcher(proxyUrl);
-        return await originalFetch(url, { ...options, dispatcher });
+        return await fetchThroughProxy(url, options, proxyUrl, proxyOptions);
       } catch (proxyError) {
-        if (proxyOptions?.strictProxy === true) {
+        if (proxyOptions?.strictProxy === true || mihomoRouting) {
           throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`);
         }
         console.warn(`[ProxyFetch] Proxy failed, falling back to direct bypass: ${proxyError.message}`);
@@ -336,11 +377,10 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
 
   if (proxyUrl) {
     try {
-      const dispatcher = await getDispatcher(proxyUrl);
-      return await originalFetch(url, { ...options, dispatcher });
+      return await fetchThroughProxy(url, options, proxyUrl, proxyOptions);
     } catch (proxyError) {
       // If strictProxy is enabled, fail hard instead of falling back to direct
-      if (proxyOptions?.strictProxy === true) {
+      if (proxyOptions?.strictProxy === true || mihomoRouting) {
         throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`);
       }
       console.warn(`[ProxyFetch] Proxy failed, falling back to direct: ${proxyError.message}`);

@@ -59,6 +59,19 @@ function buildProxyPoolUnavailable(pools, providerId) {
   };
 }
 
+function buildProxySourceUnavailable(pools) {
+  const managedCount = (pools || []).filter((pool) => pool?.type === "mihomo").length;
+  return {
+    allRateLimited: true,
+    retryAfter: new Date(Date.now() + 1000).toISOString(),
+    retryAfterHuman: "retry after 1s",
+    lastError: managedCount > 0
+      ? "All synchronized Mihomo proxy nodes are unavailable"
+      : "All proxy pools are unavailable",
+    lastErrorCode: 503,
+  };
+}
+
 function normalizeProxyPoolExclusions(value) {
   if (value instanceof Set) return value;
   if (Array.isArray(value)) return new Set(value);
@@ -113,19 +126,35 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
 
       if (strategy !== "none" || configuredPoolId) {
         const allPools = await getProxyPools({ isActive: true });
-        const usablePools = allPools.filter((pool) => String(pool.proxyUrl || "").trim());
+        // Keep managed Mihomo pools in the candidate set even when their
+        // mixed URL is missing. resolveConnectionProxyConfig intentionally
+        // returns a strict Mihomo route for those rows so proxyAwareFetch
+        // fails closed instead of silently falling back to direct traffic.
+        const proxyPools = allPools.filter((pool) =>
+          pool.type === "mihomo" || String(pool.proxyUrl || "").trim()
+        );
+        const usablePools = proxyPools.filter((pool) =>
+          pool.type !== "mihomo" || pool.sourceAvailable !== false
+        );
 
         if (strategy !== "none") {
           const availablePools = usablePools.filter((pool) =>
             !excludeProxyPoolIds.has(pool.id) && !isProxyPoolCoolingDown(pool, providerId)
           );
 
-          if (usablePools.length > 0 && availablePools.length === 0) {
+          if (proxyPools.length > 0 && availablePools.length === 0) {
+            if (usablePools.length === 0) {
+              return buildProxySourceUnavailable(proxyPools);
+            }
             return buildProxyPoolUnavailable(usablePools, providerId);
           }
 
           pickedId = pickProxyPoolId(availablePools.map((pool) => pool.id), strategy, providerId);
         } else if (configuredPoolId) {
+          const configuredPoolSource = proxyPools.find((pool) => pool.id === configuredPoolId);
+          if (configuredPoolSource?.type === "mihomo" && configuredPoolSource.sourceAvailable === false) {
+            return buildProxySourceUnavailable([configuredPoolSource]);
+          }
           const configuredPool = usablePools.find((pool) => pool.id === configuredPoolId);
           if (configuredPool && (excludeProxyPoolIds.has(configuredPoolId) || isProxyPoolCoolingDown(configuredPool, providerId))) {
             return buildProxyPoolUnavailable([configuredPool], providerId);
@@ -147,6 +176,8 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           connectionProxyUrl: resolvedProxy.connectionProxyUrl,
           connectionNoProxy: resolvedProxy.connectionNoProxy,
           connectionProxyPoolId: resolvedProxy.proxyPoolId || null,
+          strictProxy: resolvedProxy.strictProxy === true,
+          mihomoRouting: resolvedProxy.mihomoRouting || null,
           vercelRelayUrl: resolvedProxy.vercelRelayUrl || "",
         },
       };
@@ -276,6 +307,8 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         connectionProxyUrl: resolvedProxy.connectionProxyUrl,
         connectionNoProxy: resolvedProxy.connectionNoProxy,
         connectionProxyPoolId: resolvedProxy.proxyPoolId || null,
+        strictProxy: resolvedProxy.strictProxy === true,
+        mihomoRouting: resolvedProxy.mihomoRouting || null,
         vercelRelayUrl: resolvedProxy.vercelRelayUrl || "",
       },
       connectionId: connection.id,
