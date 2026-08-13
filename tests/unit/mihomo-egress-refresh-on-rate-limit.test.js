@@ -43,10 +43,26 @@ function mutatorFor(pool) {
   return async (_id, mutator) => mutator(pool);
 }
 
+function routeFor(identityKey = "4:61.219.114.43", scopeEligible = true) {
+  return {
+    proxyProvider: "subscription",
+    nodeName: "TW-A10",
+    attemptStartedAtMs: 1000,
+    egressSnapshot: {
+      startedAtMs: 1000,
+      identityKey,
+      confidence: "stable",
+      observedAt: 1,
+      expiresAt: 9999999999999,
+      scopeEligible,
+    },
+  };
+}
+
 describe("Mihomo egress refresh after rate limit", () => {
   it("marks the node mapping for refresh while writing egress cooldown", async () => {
     const pool = makePool();
-    const route = { proxyProvider: "subscription", nodeName: "TW-A10" };
+    const route = routeFor();
 
     const result = await recordMihomoRouteFailure({
       proxyPoolId: pool.id,
@@ -68,7 +84,7 @@ describe("Mihomo egress refresh after rate limit", () => {
 
   it("also refreshes mappings for FreeUsageLimitError classified as an IP candidate", async () => {
     const pool = makePool();
-    const route = { proxyProvider: "subscription", nodeName: "TW-A10" };
+    const route = routeFor();
 
     const result = await recordMihomoRouteFailure({
       proxyPoolId: pool.id,
@@ -88,7 +104,7 @@ describe("Mihomo egress refresh after rate limit", () => {
     const pool = makePool();
     const result = await recordMihomoRouteFailure({
       proxyPoolId: pool.id,
-      route: { proxyProvider: "subscription", nodeName: "TW-A10" },
+      route: routeFor(),
       businessProviderId: "opencode",
       status: 500,
       error: "upstream unavailable",

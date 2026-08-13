@@ -171,6 +171,9 @@ export function buildMihomoRoute({
   egressSnapshot = null,
 }) {
   const startedAtMs = Number.isFinite(Number(attemptStartedAtMs)) ? Number(attemptStartedAtMs) : Date.now();
+  const routeEgressSnapshot = egressSnapshot && typeof egressSnapshot === "object" && !Array.isArray(egressSnapshot)
+    ? egressSnapshot
+    : null;
   return {
     proxyPoolId,
     proxyProvider: proxyProvider || null,
@@ -180,11 +183,11 @@ export function buildMihomoRoute({
     egressIdentityKey: identityKey || null,
     egressConfidence: egressConfidence || "unknown",
     egressSnapshot: buildMihomoEgressSnapshot({
-      ...(egressSnapshot && typeof egressSnapshot === "object" ? egressSnapshot : {}),
-      identityKey: egressSnapshot?.identityKey || identityKey,
-      confidence: egressSnapshot?.confidence || egressConfidence,
+      ...(routeEgressSnapshot || {}),
+      identityKey: routeEgressSnapshot ? routeEgressSnapshot.identityKey : identityKey,
+      confidence: routeEgressSnapshot?.confidence || egressConfidence,
       startedAtMs,
-      scopeEligible: egressSnapshot?.scopeEligible === true,
+      scopeEligible: routeEgressSnapshot?.scopeEligible === true,
     }),
     attempt: Number.isFinite(attempt) ? attempt : 1,
     attemptStartedAtMs: startedAtMs,

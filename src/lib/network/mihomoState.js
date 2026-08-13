@@ -395,9 +395,25 @@ function truncateError(errorText) {
   return normalized.slice(0, 500);
 }
 
-function selectMihomoBusinessScope(pool, config, route, businessProviderId, nowMs) {
-  const egress = getMihomoNodeEgress(pool, route);
-  if (config.egressScopedCooldown === true && isMihomoStableEgress(egress, nowMs)) {
+function getMihomoAttemptEgressSnapshot(route) {
+  const snapshot = route?.egressSnapshot;
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return null;
+  return {
+    identityKey: text(snapshot.identityKey) || null,
+    confidence: text(snapshot.confidence) || "unknown",
+    observedAt: Number.isFinite(Number(snapshot.observedAt)) ? Number(snapshot.observedAt) : null,
+    expiresAt: Number.isFinite(Number(snapshot.expiresAt)) ? Number(snapshot.expiresAt) : null,
+    startedAtMs: Number.isFinite(Number(snapshot.startedAtMs)) ? Number(snapshot.startedAtMs) : null,
+    scopeEligible: snapshot.scopeEligible === true,
+  };
+}
+
+function selectMihomoBusinessScope(pool, config, route, businessProviderId, _nowMs) {
+  // An attempt's business scope is immutable. The node mapping is deliberately
+  // not consulted here because a background probe may have remapped it after
+  // the request started.
+  const egress = getMihomoAttemptEgressSnapshot(route);
+  if (config.egressScopedCooldown === true && egress?.scopeEligible === true && egress.identityKey) {
     return {
       kind: "egress",
       identityKey: egress.identityKey,
@@ -408,9 +424,18 @@ function selectMihomoBusinessScope(pool, config, route, businessProviderId, nowM
   return {
     kind: "node",
     identityKey: null,
-    egress,
+    egress: null,
     state: getMihomoNodeBusinessState(pool, route, businessProviderId),
   };
+}
+
+function markMihomoAttemptEgressNeedsProbe(nodeState, route) {
+  const attemptSnapshot = getMihomoAttemptEgressSnapshot(route);
+  const currentEgress = normalizeEgressRecord(nodeState?.egress);
+  if (!attemptSnapshot?.identityKey || !currentEgress?.identityKey) return false;
+  if (attemptSnapshot.identityKey !== currentEgress.identityKey) return false;
+  nodeState.egress.needsProbe = true;
+  return true;
 }
 
 function assignMihomoFailureState(state, { status, error, lastErrorType, nowMs, cooldownMs }) {
@@ -542,11 +567,10 @@ export async function recordMihomoRouteFailure({
     const cooldownMs = getCooldownMs(config, previous, resetsAtMs, nowMs);
     const lastErrorType = classifyRateLimitError(status, error);
     assignMihomoFailureState(previous, { status, error, lastErrorType, nowMs, cooldownMs });
-    // The cached mapping may have drifted before the rate limit arrived. This
-    // marker is required even when the cooldown itself is egress-scoped so a
-    // later request can refresh the node before trusting that identity again.
     const { nodeState } = getMutableNodeState(current, route);
-    if (nodeState.egress && typeof nodeState.egress === "object") nodeState.egress.needsProbe = true;
+    // Mark a mapping only when it is still the same identity observed by this
+    // attempt. A remapped node must not make an old E1 failure invalidate E2.
+    markMihomoAttemptEgressNeedsProbe(nodeState, route);
     outcome = { updated: true, cooldownMs, lastErrorType, scope: scope.kind, identityKey: scope.identityKey };
     return current;
   });

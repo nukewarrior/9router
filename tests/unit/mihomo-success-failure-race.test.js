@@ -29,25 +29,38 @@ function mutatorFor(pool) {
   return async (_id, mutator) => mutator(pool);
 }
 
-function setStableEgress(pool) {
+function setStableEgress(pool, identityKey = "4:61.219.114.43", confidence = "stable") {
+  const [, ip] = identityKey.split(":");
   pool.mihomoState.proxyProviders.subscription = {
     nodes: {
       "TW-A10": {
         egress: {
-          ip: "61.219.114.43",
+          ip,
           family: 4,
-          identityKey: "4:61.219.114.43",
-          confidence: "stable",
+          identityKey,
+          confidence,
           observedAt: 1,
           expiresAt: 9999999999999,
+          needsProbe: false,
         },
       },
     },
   };
 }
 
+function attemptSnapshot(identityKey, startedAtMs, scopeEligible = true) {
+  return {
+    startedAtMs,
+    identityKey,
+    confidence: "stable",
+    observedAt: 1,
+    expiresAt: 9999999999999,
+    scopeEligible,
+  };
+}
+
 async function recordFailure(pool, route, nowMs) {
-  await recordMihomoRouteFailure({
+  return recordMihomoRouteFailure({
     proxyPoolId: pool.id,
     route,
     businessProviderId: "opencode",
@@ -69,6 +82,7 @@ describe("Mihomo success/failure temporal ordering", () => {
       proxyProvider: "subscription",
       nodeName: "TW-A10",
       attemptStartedAtMs: 1000,
+      egressSnapshot: attemptSnapshot("4:61.219.114.43", 1000),
     };
 
     await recordFailure(pool, route, 3000);
@@ -99,12 +113,17 @@ describe("Mihomo success/failure temporal ordering", () => {
       proxyProvider: "subscription",
       nodeName: "TW-A10",
       attemptStartedAtMs: 500,
+      egressSnapshot: attemptSnapshot("4:61.219.114.43", 500),
     };
     await recordFailure(pool, failureRoute, 1000);
 
     await recordMihomoRouteSuccess({
       proxyPoolId: pool.id,
-      route: { ...failureRoute, attemptStartedAtMs: 2000 },
+      route: {
+        ...failureRoute,
+        attemptStartedAtMs: 2000,
+        egressSnapshot: { ...failureRoute.egressSnapshot, startedAtMs: 2000 },
+      },
       businessProviderId: "opencode",
       mutatePool: mutatorFor(pool),
       nowMs: 3000,
@@ -115,5 +134,91 @@ describe("Mihomo success/failure temporal ordering", () => {
       : getMihomoNodeBusinessState(pool, failureRoute, "opencode");
     expect(state).toMatchObject({ cooldownUntil: null, backoffLevel: 0, lastStatus: 200 });
     expect(state.lastErrorAt).toBeNull();
+  });
+
+  it("attributes an old E1 failure to E1 after the node remaps to E2", async () => {
+    const pool = makePool(true);
+    setStableEgress(pool);
+    const route = {
+      proxyProvider: "subscription",
+      nodeName: "TW-A10",
+      attemptStartedAtMs: 1000,
+      egressSnapshot: attemptSnapshot("4:61.219.114.43", 1000),
+    };
+
+    setStableEgress(pool, "4:9.9.9.9");
+    const result = await recordFailure(pool, route, 2000);
+
+    expect(result).toMatchObject({ scope: "egress", identityKey: "4:61.219.114.43" });
+    expect(getMihomoEgressBusinessState(pool, "4:61.219.114.43", "opencode")).toMatchObject({
+      backoffLevel: 1,
+      lastStatus: 429,
+    });
+    expect(getMihomoEgressBusinessState(pool, "4:9.9.9.9", "opencode").cooldownUntil).toBeNull();
+    expect(pool.mihomoState.proxyProviders.subscription.nodes["TW-A10"].egress.needsProbe).toBe(false);
+    expect(getMihomoNodeBusinessState(pool, route, "opencode").cooldownUntil).toBeNull();
+  });
+
+  it("does not let an old E1 success clear a newer E2 cooldown", async () => {
+    const pool = makePool(true);
+    setStableEgress(pool);
+    const oldRoute = {
+      proxyProvider: "subscription",
+      nodeName: "TW-A10",
+      attemptStartedAtMs: 1000,
+      egressSnapshot: attemptSnapshot("4:61.219.114.43", 1000),
+    };
+
+    setStableEgress(pool, "4:9.9.9.9");
+    const newRoute = {
+      ...oldRoute,
+      attemptStartedAtMs: 2000,
+      egressSnapshot: attemptSnapshot("4:9.9.9.9", 2000),
+    };
+    await recordFailure(pool, newRoute, 3000);
+
+    await recordMihomoRouteSuccess({
+      proxyPoolId: pool.id,
+      route: oldRoute,
+      businessProviderId: "opencode",
+      mutatePool: mutatorFor(pool),
+      nowMs: 4000,
+    });
+
+    expect(getMihomoEgressBusinessState(pool, "4:9.9.9.9", "opencode")).toMatchObject({
+      backoffLevel: 1,
+      lastStatus: 429,
+    });
+    expect(getMihomoEgressBusinessState(pool, "4:61.219.114.43", "opencode")).toMatchObject({
+      cooldownUntil: null,
+      lastStatus: 200,
+    });
+  });
+
+  it("keeps a tentative attempt node-scoped after its mapping becomes stable", async () => {
+    const pool = makePool(true);
+    setStableEgress(pool, "4:61.219.114.43", "tentative");
+    const route = {
+      proxyProvider: "subscription",
+      nodeName: "TW-A10",
+      attemptStartedAtMs: 1000,
+      egressSnapshot: attemptSnapshot("4:61.219.114.43", 1000, false),
+    };
+
+    setStableEgress(pool);
+    const result = await recordMihomoRouteFailure({
+      proxyPoolId: pool.id,
+      route,
+      businessProviderId: "opencode",
+      status: 429,
+      error: "rate limit",
+      mutatePool: mutatorFor(pool),
+      nowMs: 2000,
+    });
+
+    expect(result).toMatchObject({ scope: "node", identityKey: null });
+    expect(getMihomoNodeBusinessState(pool, route, "opencode")).toMatchObject({ backoffLevel: 1, lastStatus: 429 });
+    expect(getMihomoEgressBusinessState(pool, "4:61.219.114.43", "opencode").cooldownUntil).toBeNull();
+    expect(pool.mihomoState.proxyProviders.subscription.nodes["TW-A10"].egress.needsProbe).toBe(true);
   });
 });

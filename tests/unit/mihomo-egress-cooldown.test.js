@@ -50,6 +50,22 @@ function setNode(pool, nodeName, egress) {
   pool.mihomoState.proxyProviders.subscription.nodes[nodeName] = { egress };
 }
 
+function routeFor(identityKey = "4:61.219.114.43", { scopeEligible = true, startedAtMs = 1000, confidence = "stable" } = {}) {
+  return {
+    proxyProvider: "subscription",
+    nodeName: "TW-A10",
+    attemptStartedAtMs: startedAtMs,
+    egressSnapshot: {
+      startedAtMs,
+      identityKey,
+      confidence,
+      observedAt: 100,
+      expiresAt: 9999999999999,
+      scopeEligible,
+    },
+  };
+}
+
 function mutatorFor(pool, writes = null) {
   return async (_id, mutator) => {
     if (writes) writes.count += 1;
@@ -74,7 +90,7 @@ describe("Mihomo egress-scoped business cooldown", () => {
   it("writes stable/fresh rate limits to identity/provider state", async () => {
     const pool = makePool();
     setNode(pool, "TW-A10", stableEgress("4:61.219.114.43"));
-    const route = { proxyProvider: "subscription", nodeName: "TW-A10" };
+    const route = routeFor();
     const result = await recordMihomoRouteFailure({
       proxyPoolId: pool.id,
       route,
@@ -94,7 +110,7 @@ describe("Mihomo egress-scoped business cooldown", () => {
     const pool = makePool();
     pool.mihomo.egressScopedCooldown = false;
     setNode(pool, "TW-A10", stableEgress("4:61.219.114.43"));
-    const route = { proxyProvider: "subscription", nodeName: "TW-A10" };
+    const route = routeFor();
     const result = await recordMihomoRouteFailure({
       proxyPoolId: pool.id,
       route,
@@ -158,7 +174,10 @@ describe("Mihomo egress-scoped business cooldown", () => {
     ]) {
       const pool = makePool();
       setNode(pool, "TW-A10", egress);
-      const route = { proxyProvider: "subscription", nodeName: "TW-A10" };
+      const route = routeFor(egress?.identityKey || null, {
+        scopeEligible: false,
+        confidence: egress?.confidence || "unknown",
+      });
       const result = await recordMihomoRouteFailure({
         proxyPoolId: pool.id,
         route,
@@ -178,7 +197,7 @@ describe("Mihomo egress-scoped business cooldown", () => {
   it("does not create egress cooldown for generic failures, and resets egress backoff on success", async () => {
     const pool = makePool();
     setNode(pool, "TW-A10", stableEgress("4:61.219.114.43"));
-    const route = { proxyProvider: "subscription", nodeName: "TW-A10" };
+    const route = routeFor();
     const generic = await recordMihomoRouteFailure({
       proxyPoolId: pool.id,
       route,
@@ -205,7 +224,7 @@ describe("Mihomo egress-scoped business cooldown", () => {
     const writes = { count: 0 };
     const mutatePool = mutatorFor(pool, writes);
     const getPool = async () => pool;
-    const route = { proxyProvider: "subscription", nodeName: "TW-A10" };
+    const route = routeFor();
 
     await recordMihomoRouteSuccess({ proxyPoolId: pool.id, route, businessProviderId: "opencode", mutatePool, getPool, nowMs: 1000 });
     await recordMihomoRouteSuccess({ proxyPoolId: pool.id, route, businessProviderId: "opencode", mutatePool, getPool, nowMs: 2000 });
