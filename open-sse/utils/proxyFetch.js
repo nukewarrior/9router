@@ -205,10 +205,20 @@ function resolveConnectionProxyUrl(targetUrl, proxyOptions) {
   if (!enabled) return null;
 
   const proxyUrlRaw = normalizeString(proxyOptions?.url ?? proxyOptions?.connectionProxyUrl);
-  if (!proxyUrlRaw) return null;
+  if (!proxyUrlRaw) {
+    if (proxyOptions?.strictProxy === true) {
+      throw new Error("[ProxyFetch] Proxy required but no proxy URL is configured");
+    }
+    return null;
+  }
 
   const noProxy = normalizeString(proxyOptions?.noProxy ?? proxyOptions?.connectionNoProxy);
-  if (noProxy && shouldBypassByNoProxy(targetUrl, noProxy)) return null;
+  if (noProxy && shouldBypassByNoProxy(targetUrl, noProxy)) {
+    if (proxyOptions?.strictProxy === true) {
+      throw new Error("[ProxyFetch] Proxy required but target matches no_proxy");
+    }
+    return null;
+  }
 
   return normalizeProxyUrl(proxyUrlRaw);
 }
@@ -230,6 +240,28 @@ async function getDispatcher(proxyUrl) {
   }
 
   return proxyDispatchers.get(normalized);
+}
+
+async function fetchViaProxy(url, options, proxyUrl, proxyOptions) {
+  const ephemeral = proxyOptions?.ephemeralProxyDispatcher === true;
+  const dispatcher = ephemeral
+    ? await (async () => {
+      const { ProxyAgent } = await import("undici");
+      return new ProxyAgent({ uri: proxyUrl });
+    })()
+    : await getDispatcher(proxyUrl);
+
+  try {
+    return await originalFetch(url, { ...options, dispatcher });
+  } finally {
+    // Do not destroy a managed dispatcher: an active streaming response may
+    // still be reading from its socket. close() is graceful and intentionally
+    // not awaited so fetch can return as soon as response headers arrive.
+    if (ephemeral) {
+      const closing = dispatcher?.close?.();
+      if (closing?.catch) void closing.catch(() => {});
+    }
+  }
 }
 
 /**
@@ -315,8 +347,7 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
     if (proxyUrl) {
       // Proxy resolves DNS externally (not affected by /etc/hosts) — use proxy directly
       try {
-        const dispatcher = await getDispatcher(proxyUrl);
-        return await originalFetch(url, { ...options, dispatcher });
+        return await fetchViaProxy(url, options, proxyUrl, proxyOptions);
       } catch (proxyError) {
         if (proxyOptions?.strictProxy === true) {
           throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`);
@@ -336,8 +367,7 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
 
   if (proxyUrl) {
     try {
-      const dispatcher = await getDispatcher(proxyUrl);
-      return await originalFetch(url, { ...options, dispatcher });
+      return await fetchViaProxy(url, options, proxyUrl, proxyOptions);
     } catch (proxyError) {
       // If strictProxy is enabled, fail hard instead of falling back to direct
       if (proxyOptions?.strictProxy === true) {

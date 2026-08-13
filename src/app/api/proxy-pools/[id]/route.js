@@ -5,6 +5,7 @@ import {
   getProxyPoolById,
   updateProxyPool,
 } from "@/models";
+import { PROXY_POOL_TYPES } from "@/lib/network/proxyPoolTypes.js";
 
 function normalizeProxyPoolUpdate(body = {}) {
   const updates = {};
@@ -38,8 +39,7 @@ function normalizeProxyPoolUpdate(body = {}) {
   }
 
   if (Object.prototype.hasOwnProperty.call(body, "type")) {
-    const validTypes = ["http", "vercel", "cloudflare"];
-    updates.type = validTypes.includes(body?.type) ? body.type : "http";
+    updates.type = PROXY_POOL_TYPES.has(body?.type) ? body.type : "http";
   }
 
   return { updates };

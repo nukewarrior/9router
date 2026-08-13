@@ -1,4 +1,5 @@
 import { getProxyPoolById } from "@/models";
+import { isMihomoProxyPool, isRelayProxyPoolType } from "./proxyPoolTypes.js";
 
 // Safely normalize any value into a trimmed string.
 function normalizeString(value) {
@@ -98,7 +99,7 @@ export async function resolveConnectionProxyConfig(
          * Vercel/Cloudflare relay proxies use base URL rewriting
          * instead of HTTP_PROXY environment variables.
          */
-        if (proxyPool.type === "vercel" || proxyPool.type === "cloudflare" || proxyPool.type === "deno") {
+        if (isRelayProxyPoolType(proxyPool)) {
           return {
             source: proxyPool.type,
 
@@ -128,7 +129,9 @@ export async function resolveConnectionProxyConfig(
           connectionProxyUrl: proxyUrl,
           connectionNoProxy: noProxy,
 
-          strictProxy: proxyPool.strictProxy === true,
+          // Mihomo is an explicit managed exit and must never degrade to
+          // another proxy or DIRECT when its listener is unavailable.
+          strictProxy: isMihomoProxyPool(proxyPool) || proxyPool.strictProxy === true,
         };
       }
     }
@@ -149,6 +152,7 @@ export async function resolveConnectionProxyConfig(
         proxyPool: null,
 
         ...legacy,
+        strictProxy: providerSpecificData?.strictProxy === true,
       };
     }
 
@@ -164,6 +168,7 @@ export async function resolveConnectionProxyConfig(
       proxyPool: null,
 
       ...legacy,
+      strictProxy: providerSpecificData?.strictProxy === true,
     };
   } catch (error) {
     console.error(

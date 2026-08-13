@@ -105,3 +105,24 @@ describe("BaseExecutor.execute — computeRetryDelay hook veto", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("BaseExecutor.execute — proxy option propagation", () => {
+  it("passes strict and ephemeral proxy options to proxyAwareFetch", async () => {
+    const ex = makeExec({ baseUrl: "https://x/api" });
+    fetchMock.mockResolvedValueOnce(res(200));
+    const proxyOptions = {
+      connectionProxyEnabled: true,
+      connectionProxyUrl: "http://router:17891",
+      strictProxy: true,
+      ephemeralProxyDispatcher: true,
+    };
+
+    await ex.execute({ model: "m", body: {}, stream: false, credentials: creds, proxyOptions });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://x/api",
+      expect.objectContaining({ method: "POST" }),
+      proxyOptions,
+    );
+  });
+});

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createProxyPool, getProviderConnections, getProxyPools } from "@/models";
+import { PROXY_POOL_TYPES } from "@/lib/network/proxyPoolTypes.js";
 
 function toBoolean(value) {
   if (value === "true") return true;
@@ -7,15 +8,13 @@ function toBoolean(value) {
   return undefined;
 }
 
-const VALID_PROXY_TYPES = ["http", "vercel", "cloudflare", "deno"];
-
 function normalizeProxyPoolInput(body = {}) {
   const name = typeof body?.name === "string" ? body.name.trim() : "";
   const proxyUrl = typeof body?.proxyUrl === "string" ? body.proxyUrl.trim() : "";
   const noProxy = typeof body?.noProxy === "string" ? body.noProxy.trim() : "";
   const isActive = body?.isActive === undefined ? true : body.isActive === true;
   const strictProxy = body?.strictProxy === true;
-  const type = VALID_PROXY_TYPES.includes(body?.type) ? body.type : "http";
+  const type = PROXY_POOL_TYPES.has(body?.type) ? body.type : "http";
 
   if (!name) {
     return { error: "Name is required" };
