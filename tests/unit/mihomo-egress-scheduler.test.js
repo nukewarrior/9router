@@ -3,6 +3,7 @@ import {
   createMihomoEgressScheduler,
   getMihomoEgressProbeReason,
 } from "../../src/lib/network/mihomoEgressScheduler.js";
+import { probeMihomoNodesEgress } from "../../src/lib/network/mihomoEgressDiscovery.js";
 import { clearMihomoNodeDirectoryCache } from "../../src/lib/network/mihomoState.js";
 import { prepareMihomoRouteAttempt } from "../../src/lib/network/mihomoRouteManager.js";
 
@@ -126,5 +127,24 @@ describe("Mihomo egress scheduler", () => {
       "expiring",
       "unknown",
     ]);
+  });
+
+  it("queues a bounded batch without waiting for probe samples", async () => {
+    const pool = makePool();
+    const queueProbe = vi.fn(() => ({ queued: 2, skipped: 0 }));
+    const nodes = ["JP-STALE", "JP-NEEDS", "JP-EXPIRING", "JP-UNKNOWN"];
+    const result = await probeMihomoNodesEgress({
+      poolId: pool.id,
+      getPool: async () => pool,
+      makeClient: () => clientFor(nodes),
+      queueOnly: true,
+      limit: 2,
+      queueProbe,
+      nowMs: 100000,
+    });
+
+    expect(result).toMatchObject({ ok: true, requested: 2, queued: 2, skipped: 0, results: [] });
+    expect(queueProbe).toHaveBeenCalledTimes(1);
+    expect(queueProbe.mock.calls[0][0].nodes).toHaveLength(2);
   });
 });

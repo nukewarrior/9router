@@ -11,6 +11,7 @@ import {
   isMihomoEgressFresh,
   recordMihomoNodeEgress,
 } from "./mihomoState.js";
+import { enqueueMihomoEgressBatch, getMihomoEgressProbeReason } from "./mihomoEgressScheduler.js";
 
 const MAX_OBSERVED_IPS = 5;
 
@@ -115,6 +116,8 @@ export function toPublicMihomoEgressProbeResponse(result) {
       ok: result.ok === true,
       region: text(result.region) || null,
       requested: Math.max(0, Number(result.requested) || 0),
+      queued: Math.max(0, Number(result.queued) || 0),
+      skipped: Math.max(0, Number(result.skipped) || 0),
       results: result.results.map(publicProbeResult),
       directory: publicDirectory(result.directory),
       summary: pickPublicFields(result.summary, [
@@ -393,6 +396,7 @@ export async function probeMihomoNodeEgress({
 
 function probeRank(node, nowMs) {
   const egress = node?.egress;
+  if (egress?.needsProbe === true) return 0;
   if (!egress || egress.confidence === "unknown") return 0;
   if (!isMihomoEgressFresh(egress, nowMs)) return 1;
   if (egress.lastProbeError) return 2;
@@ -435,6 +439,8 @@ export async function probeMihomoNodesEgress({
   proxyProvider = null,
   limit = null,
   force = false,
+  queueOnly = false,
+  queueProbe = enqueueMihomoEgressBatch,
   getPool = getProxyPoolById,
   makeClient,
   fetchProbe = proxyAwareFetch,
@@ -464,11 +470,43 @@ export async function probeMihomoNodesEgress({
   const candidates = directory.nodes
     .filter((node) => !region || node.region === region)
     .filter((node) => !proxyProvider || node.proxyProvider === proxyProvider)
-    .filter((node) => force || !node.egress || node.egress.confidence !== "stable" || !isMihomoEgressFresh(node.egress, nowMs) || Boolean(node.egress.lastProbeError))
+    .filter((node) => force || Boolean(getMihomoEgressProbeReason(node.egress, { nowMs, ttlMs: config.egressProbeTtlMs })) || Boolean(node.egress?.lastProbeError))
     .sort((a, b) => probeRank(a, nowMs) - probeRank(b, nowMs) || nodeAge(a) - nodeAge(b) || a.key.localeCompare(b.key));
   const boundedLimit = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Math.floor(Number(limit)) : candidates.length;
   const selected = candidates.slice(0, boundedLimit);
   const results = [];
+
+  if (queueOnly) {
+    const queued = await queueProbe({
+      poolId,
+      nodes: selected.map((node) => ({
+        poolId,
+        proxyProvider: node.proxyProvider,
+        nodeName: node.nodeName,
+        egress: node.egress,
+        reason: force
+          ? "manual"
+          : getMihomoEgressProbeReason(node.egress, { nowMs, ttlMs: config.egressProbeTtlMs }) || "manual",
+      })),
+      getPool,
+      makeClient,
+      fetchProbe,
+      mutatePool,
+      ttlMs: config.egressProbeTtlMs,
+    });
+    const refreshedDirectory = attachMihomoNodeEgress(directory, pool);
+    return {
+      ok: true,
+      region: region || null,
+      requested: selected.length,
+      queued: Number(queued?.queued) || 0,
+      skipped: Number(queued?.skipped) || 0,
+      results,
+      directory: refreshedDirectory,
+      summary: summarizeMihomoEgressInventory(refreshedDirectory.nodes, nowMs),
+      pool,
+    };
+  }
 
   for (const node of selected) {
     const result = await probeMihomoNodeEgress({

@@ -294,8 +294,10 @@ export default function ProxyPoolsPage() {
       }
       if (data.summary) setMihomoSummary(data.summary);
       await handleLoadMihomoNodes();
-      const count = data.results ? data.results.length : 1;
-      notify.success(`${node ? "Node" : "Egress scan"} completed (${count} probe${count === 1 ? "" : "s"})`);
+      const count = data.queued ?? (data.results ? data.results.length : 1);
+      notify.success(node
+        ? `Node probe completed (${count} probe${count === 1 ? "" : "s"})`
+        : `Egress scan queued (${count} probe${count === 1 ? "" : "s"})`);
     } catch (error) {
       console.log("Error probing Mihomo egress:", error);
       notify.error("Egress probe failed");
@@ -1460,6 +1462,7 @@ export default function ProxyPoolsPage() {
                     <tbody className="divide-y divide-black/5 dark:divide-white/5">
                       {mihomoNodes.map((node) => {
                         const state = node.providerState?.opencode || {};
+                        const effectiveStatus = node.effectiveStatus || state.status;
                         const mappingLabel = `${node.exitConfidence || "unknown"}${node.exitFresh ? " · fresh" : node.exitConfidence === "unknown" ? "" : " · stale"}`;
                         return (
                           <tr key={`${node.proxyProvider}\0${node.nodeName || node.name}`}>
@@ -1476,15 +1479,15 @@ export default function ProxyPoolsPage() {
                               </Badge>
                             </td>
                             <td className="px-3 py-2">
-                              <Badge size="sm" variant={state.status === "healthy" ? "success" : state.status === "cooldown" ? "warning" : "default"}>
-                                {state.status || "unknown"}
+                                <Badge size="sm" variant={effectiveStatus === "healthy" ? "success" : effectiveStatus === "cooldown" ? "warning" : "default"}>
+                                {effectiveStatus || "unknown"}
                               </Badge>
                             </td>
                             <td className="px-3 py-2 text-right whitespace-nowrap">
                               <button className="mr-2 text-primary hover:underline disabled:opacity-50" onClick={() => handleProbeMihomoEgress({ node, force: true })} disabled={mihomoEgressProbeBusy}>
                                 Probe
                               </button>
-                              {state.cooldownUntil && editingProxyPool && (
+                              {state.nodeCooldownUntil && editingProxyPool && (
                                 <button className="mr-2 text-primary hover:underline" onClick={() => handleClearMihomoCooldown(node)}>
                                   Clear node
                                 </button>

@@ -15,6 +15,7 @@ const NESTED_PROXY_TYPES = new Set([
 ]);
 
 const nodeDirectoryCache = new Map();
+export const MIHOMO_NODE_DIRECTORY_CACHE_MAX_ENTRIES = 200;
 
 export const SELECTOR_PROXY_PROVIDER = "__selector__";
 
@@ -177,6 +178,10 @@ export function buildMihomoNodeDirectory({ selector, selectorName = null, proxie
 export async function discoverMihomoNodeDirectory({ poolId, client, selectorName, providerNames = [], includeRegex = "", excludeRegex = "", mihomoState = null, ttlMs = 30000, nowMs = Date.now() } = {}) {
   if (!poolId) throw new TypeError("poolId is required for Mihomo node discovery");
   if (!client) throw new TypeError("Mihomo client is required for node discovery");
+
+  for (const [key, entry] of nodeDirectoryCache.entries()) {
+    if (!entry || entry.expiresAt <= nowMs) nodeDirectoryCache.delete(key);
+  }
   const cached = nodeDirectoryCache.get(poolId);
   if (cached && cached.expiresAt > nowMs) {
     const cachedValue = clone(cached.value);
@@ -215,7 +220,16 @@ export async function discoverMihomoNodeDirectory({ poolId, client, selectorName
     value: clone(value),
     expiresAt: nowMs + Math.max(1000, Number(ttlMs) || 30000),
   });
+  while (nodeDirectoryCache.size > MIHOMO_NODE_DIRECTORY_CACHE_MAX_ENTRIES) {
+    const oldestKey = nodeDirectoryCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    nodeDirectoryCache.delete(oldestKey);
+  }
   return clone(value);
+}
+
+export function getMihomoNodeDirectoryCacheSize() {
+  return nodeDirectoryCache.size;
 }
 
 export function clearMihomoNodeDirectoryCache(poolId = null) {

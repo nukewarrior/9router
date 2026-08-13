@@ -4,6 +4,8 @@ import {
   clearMihomoNodeDirectoryCache,
   classifyNodeRegion,
   discoverMihomoNodeDirectory,
+  getMihomoNodeDirectoryCacheSize,
+  MIHOMO_NODE_DIRECTORY_CACHE_MAX_ENTRIES,
   SELECTOR_PROXY_PROVIDER,
 } from "../../src/lib/network/mihomoState.js";
 
@@ -92,5 +94,22 @@ describe("Mihomo node discovery", () => {
 
   it("fails configuration when the configured proxy is not a Selector", () => {
     expect(() => buildMihomoNodeDirectory({ selector: { type: "URLTest", all: ["A"] } })).toThrow(/Selector/);
+  });
+
+  it("cleans expired entries and caps process-local directory cache growth", async () => {
+    const client = {
+      getProxy: vi.fn().mockResolvedValue({ type: "Selector", now: "A", all: ["A"] }),
+      getProxies: vi.fn().mockResolvedValue({ proxies: { A: { type: "VLESS", alive: true } } }),
+      getProxyProvider: vi.fn(),
+    };
+
+    await discoverMihomoNodeDirectory({ poolId: "expired", client, selectorName: "selector", ttlMs: 1000, nowMs: 0 });
+    await discoverMihomoNodeDirectory({ poolId: "expired-refresh", client, selectorName: "selector", ttlMs: 1000, nowMs: 2000 });
+    expect(getMihomoNodeDirectoryCacheSize()).toBe(1);
+
+    for (let index = 0; index < MIHOMO_NODE_DIRECTORY_CACHE_MAX_ENTRIES + 5; index += 1) {
+      await discoverMihomoNodeDirectory({ poolId: `pool-${index}`, client, selectorName: "selector", ttlMs: 1000, nowMs: 3000 });
+    }
+    expect(getMihomoNodeDirectoryCacheSize()).toBe(MIHOMO_NODE_DIRECTORY_CACHE_MAX_ENTRIES);
   });
 });

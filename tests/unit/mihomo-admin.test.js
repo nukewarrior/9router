@@ -99,6 +99,41 @@ describe("Mihomo admin operations", () => {
     expect(result.summary).toMatchObject({ leafNodes: 2, probedNodes: 1, freshStableMappings: 1, distinctExitIps: 1 });
   });
 
+  it("reports egress cooldown as the effective status only when enabled and fresh", async () => {
+    const pool = makePool();
+    pool.mihomo.egressScopedCooldown = true;
+    pool.mihomoState.proxyProviders.subscription = {
+      nodes: {
+        "🇹🇼 TW-A30": {
+          egress: {
+            ip: "61.219.114.43",
+            family: 4,
+            identityKey: "4:61.219.114.43",
+            confidence: "stable",
+            observedAt: 100,
+            expiresAt: 1000000,
+          },
+          business: { opencode: { lastSuccessAt: new Date(100).toISOString() } },
+        },
+      },
+    };
+    pool.mihomoState.egressIdentities["4:61.219.114.43"] = {
+      business: { opencode: { cooldownUntil: new Date(500000).toISOString() } },
+    };
+
+    const result = await getMihomoNodeStatus({ pool, makeClient: () => fakeClient(), nowMs: 1000 });
+    expect(result.nodes[0]).toMatchObject({
+      effectiveStatus: "cooldown",
+      cooldownScope: "egress",
+      effectiveCooldownUntil: "1970-01-01T00:08:20.000Z",
+      providerState: { opencode: { status: "cooldown", cooldownScope: "egress", nodeCooldownUntil: null } },
+    });
+
+    pool.mihomo.egressScopedCooldown = false;
+    const disabled = await getMihomoNodeStatus({ pool, makeClient: () => fakeClient(), nowMs: 1000 });
+    expect(disabled.nodes[0]).toMatchObject({ effectiveStatus: "healthy", cooldownScope: null, effectiveCooldownUntil: null });
+  });
+
   it("maps invalid configuration to a client-safe 400 response", () => {
     const result = mihomoAdminErrorResponse(new MihomoAdminError("MIHOMO_INVALID_CONFIG", "Mihomo selectorName is required", 400));
     expect(result.status).toBe(400);

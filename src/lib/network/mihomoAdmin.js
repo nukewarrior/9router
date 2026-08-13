@@ -51,17 +51,10 @@ function mergedConfig(pool, override = null) {
   });
 }
 
-function publicNode(node, pool, businessProvider, allNodes = [], nowMs = Date.now()) {
+function publicNode(node, pool, businessProvider, allNodes = [], nowMs = Date.now(), config = {}) {
   const state = getMihomoNodeBusinessState(pool, node, businessProvider);
-  const cooldownUntil = text(state.cooldownUntil) || null;
-  const cooldownMs = cooldownUntil ? Date.parse(cooldownUntil) : NaN;
-  const status = Number.isFinite(cooldownMs) && cooldownMs > Date.now()
-    ? "cooldown"
-    : state.lastStatus >= 400
-      ? "error"
-      : state.lastSuccessAt
-      ? "healthy"
-        : "unknown";
+  const nodeCooldownAt = Date.parse(state.cooldownUntil || "");
+  const nodeCooldownActive = Number.isFinite(nodeCooldownAt) && nodeCooldownAt > nowMs;
   const egress = node.egress || null;
   const stableFresh = isMihomoStableEgress(egress, nowMs);
   const exitGroupSize = stableFresh
@@ -69,6 +62,29 @@ function publicNode(node, pool, businessProvider, allNodes = [], nowMs = Date.no
     : 0;
   const exitState = stableFresh ? getMihomoEgressBusinessState(pool, egress.identityKey, businessProvider) : null;
   const exitCooldownAt = exitState ? Date.parse(exitState.cooldownUntil || "") : NaN;
+  const egressCooldownActive = config.egressScopedCooldown === true
+    && stableFresh
+    && Number.isFinite(exitCooldownAt)
+    && exitCooldownAt > nowMs;
+  const egressError = Number(exitState?.lastStatus) >= 400 || Boolean(exitState?.lastErrorType || exitState?.lastError);
+  const nodeError = Number(state.lastStatus) >= 400 || Boolean(state.lastErrorType || state.lastError);
+  const effectiveStatus = egressCooldownActive || nodeCooldownActive
+    ? "cooldown"
+    : nodeError || egressError
+      ? "error"
+      : state.lastSuccessAt || exitState?.lastSuccessAt
+        ? "healthy"
+        : "unknown";
+  const effectiveCooldownAt = egressCooldownActive
+    ? exitCooldownAt
+    : nodeCooldownActive
+      ? nodeCooldownAt
+      : NaN;
+  const effectiveCooldownUntil = Number.isFinite(effectiveCooldownAt)
+    ? new Date(effectiveCooldownAt).toISOString()
+    : null;
+  const cooldownScope = egressCooldownActive ? "egress" : nodeCooldownActive ? "node" : null;
+  const nodeCooldownUntil = Number.isFinite(nodeCooldownAt) ? new Date(nodeCooldownAt).toISOString() : null;
   return {
     name: node.nodeName,
     nodeName: node.nodeName,
@@ -88,10 +104,16 @@ function publicNode(node, pool, businessProvider, allNodes = [], nowMs = Date.no
     exitMappingAgeMs: Number.isFinite(Number(egress?.observedAt)) ? Math.max(0, nowMs - Number(egress.observedAt)) : null,
     exitGroupSize,
     exitCooldownUntil: Number.isFinite(exitCooldownAt) ? new Date(exitCooldownAt).toISOString() : null,
+    effectiveStatus,
+    effectiveCooldownUntil,
+    cooldownScope,
     providerState: {
       [businessProvider]: {
-        status,
-        cooldownUntil,
+        status: effectiveStatus,
+        cooldownUntil: effectiveCooldownUntil,
+        nodeCooldownUntil,
+        egressCooldownUntil: Number.isFinite(exitCooldownAt) ? new Date(exitCooldownAt).toISOString() : null,
+        cooldownScope,
         lastStatus: state.lastStatus ?? null,
         lastErrorType: state.lastErrorType ?? null,
         lastSuccessAt: state.lastSuccessAt ?? null,
@@ -224,6 +246,7 @@ export async function getMihomoNodeStatus({
   pool,
   businessProvider = "opencode",
   makeClient = createMihomoClient,
+  nowMs = Date.now(),
 } = {}) {
   requireMihomoPool(pool);
   let config;
@@ -246,6 +269,7 @@ export async function getMihomoNodeStatus({
       excludeRegex: config.excludeRegex,
       mihomoState: pool.mihomoState,
       ttlMs: config.syncTtlMs,
+      nowMs,
     }), pool);
   } catch (error) {
     throw normalizeControllerFailure(error);
@@ -257,8 +281,8 @@ export async function getMihomoNodeStatus({
       type: text(selector?.type) || null,
       now: text(selector?.now) || null,
     },
-    nodes: directory.nodes.map((node) => publicNode(node, pool, businessProvider, directory.nodes)),
-    summary: summarizeMihomoEgressInventory(directory.nodes),
+    nodes: directory.nodes.map((node) => publicNode(node, pool, businessProvider, directory.nodes, nowMs, config)),
+    summary: summarizeMihomoEgressInventory(directory.nodes, nowMs),
     warnings: directory.warnings,
     fetchedAt: new Date().toISOString(),
   };

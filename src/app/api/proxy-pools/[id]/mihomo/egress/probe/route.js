@@ -39,6 +39,7 @@ export async function POST(request, { params }) {
         proxyProvider: text(body?.proxyProvider) || null,
         limit: body?.limit,
         force: body?.force === true,
+        queueOnly: true,
       });
 
     return NextResponse.json(toPublicMihomoEgressProbeResponse(result), { headers: { "Cache-Control": "no-store" } });
