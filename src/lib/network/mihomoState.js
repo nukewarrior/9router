@@ -1,3 +1,7 @@
+import { mutateProxyPool as defaultMutateProxyPool } from "@/models";
+import { normalizeMihomoConfig } from "./mihomoConfig.js";
+import { classifyRateLimitError, isIpCandidateRateLimitError } from "open-sse/services/errorClassification.js";
+
 const NESTED_PROXY_TYPES = new Set([
   "selector",
   "urltest",
@@ -181,4 +185,163 @@ export async function discoverMihomoNodeDirectory({ poolId, client, selectorName
 export function clearMihomoNodeDirectoryCache(poolId = null) {
   if (poolId) nodeDirectoryCache.delete(poolId);
   else nodeDirectoryCache.clear();
+}
+
+const RESERVED_STATE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+function stateKey(value, fieldName) {
+  const key = text(value);
+  if (!key || RESERVED_STATE_KEYS.has(key)) {
+    const error = new Error(`${fieldName} is required and must be a safe state key`);
+    error.code = "MIHOMO_INVALID_STATE_KEY";
+    throw error;
+  }
+  return key;
+}
+
+function ensureObject(parent, key) {
+  if (!parent[key] || typeof parent[key] !== "object" || Array.isArray(parent[key])) parent[key] = {};
+  return parent[key];
+}
+
+export function getMihomoNodeBusinessState(pool, route, businessProviderId) {
+  const proxyProvider = stateKey(route?.proxyProvider || SELECTOR_PROXY_PROVIDER, "proxyProvider");
+  const nodeName = stateKey(route?.nodeName, "nodeName");
+  const businessProvider = stateKey(businessProviderId, "businessProvider");
+  return pool?.mihomoState?.proxyProviders?.[proxyProvider]?.nodes?.[nodeName]?.business?.[businessProvider] || {
+    cooldownUntil: null,
+    backoffLevel: 0,
+    lastStatus: null,
+    lastErrorType: null,
+    lastError: null,
+    lastErrorAt: null,
+    lastSuccessAt: null,
+  };
+}
+
+function getCooldownMs(config, previousState, resetsAtMs, nowMs) {
+  const reset = Number(resetsAtMs);
+  if (Number.isFinite(reset) && reset > nowMs) return Math.min(reset - nowMs, config.cooldown.maxMs);
+  const previousLevel = Math.max(0, Number(previousState?.backoffLevel) || 0);
+  return Math.min(
+    config.cooldown.baseMs * Math.pow(config.cooldown.multiplier, previousLevel),
+    config.cooldown.maxMs,
+  );
+}
+
+function normalizeStateContainer(pool) {
+  if (!pool.mihomoState || typeof pool.mihomoState !== "object" || Array.isArray(pool.mihomoState)) {
+    pool.mihomoState = { proxyProviders: {} };
+  }
+  if (!pool.mihomoState.proxyProviders || typeof pool.mihomoState.proxyProviders !== "object" || Array.isArray(pool.mihomoState.proxyProviders)) {
+    pool.mihomoState.proxyProviders = {};
+  }
+  return pool.mihomoState.proxyProviders;
+}
+
+function getMutableBusinessState(pool, route, businessProviderId) {
+  const proxyProvider = stateKey(route?.proxyProvider || SELECTOR_PROXY_PROVIDER, "proxyProvider");
+  const nodeName = stateKey(route?.nodeName, "nodeName");
+  const businessProvider = stateKey(businessProviderId, "businessProvider");
+  const providers = normalizeStateContainer(pool);
+  const providerState = ensureObject(providers, proxyProvider);
+  const nodes = ensureObject(providerState, "nodes");
+  const nodeState = ensureObject(nodes, nodeName);
+  const business = ensureObject(nodeState, "business");
+  const previous = business[businessProvider] && typeof business[businessProvider] === "object"
+    ? business[businessProvider]
+    : {};
+  business[businessProvider] = previous;
+  return previous;
+}
+
+function truncateError(errorText) {
+  const normalized = typeof errorText === "string" ? errorText : String(errorText || "");
+  return normalized.slice(0, 500);
+}
+
+export async function recordMihomoRouteFailure({
+  proxyPoolId,
+  route,
+  businessProviderId,
+  status,
+  error,
+  resetsAtMs = null,
+  mutatePool = defaultMutateProxyPool,
+  nowMs = Date.now(),
+} = {}) {
+  if (!isIpCandidateRateLimitError(status, error)) return { updated: false, cooldownMs: 0, pool: null };
+
+  let outcome = { updated: false, cooldownMs: 0, pool: null };
+  const pool = await mutatePool(proxyPoolId, (current) => {
+    if (!current?.mihomo || typeof current.mihomo !== "object") return current;
+    const config = normalizeMihomoConfig(current.mihomo);
+    const previous = getMutableBusinessState(current, route, businessProviderId);
+    const cooldownMs = getCooldownMs(config, previous, resetsAtMs, nowMs);
+    const previousLevel = Math.max(0, Number(previous.backoffLevel) || 0);
+    const lastErrorType = classifyRateLimitError(status, error);
+    Object.assign(previous, {
+      cooldownUntil: new Date(nowMs + cooldownMs).toISOString(),
+      backoffLevel: previousLevel + 1,
+      lastStatus: Number(status) || status || null,
+      lastErrorType,
+      lastError: truncateError(error),
+      lastErrorAt: new Date(nowMs).toISOString(),
+    });
+    outcome = { updated: true, cooldownMs, lastErrorType };
+    return current;
+  });
+  outcome.pool = pool;
+  return outcome;
+}
+
+export async function recordMihomoRouteSuccess({
+  proxyPoolId,
+  route,
+  businessProviderId,
+  mutatePool = defaultMutateProxyPool,
+  nowMs = Date.now(),
+} = {}) {
+  let updated = false;
+  const pool = await mutatePool(proxyPoolId, (current) => {
+    if (!current?.mihomo || typeof current.mihomo !== "object") return current;
+    const state = getMutableBusinessState(current, route, businessProviderId);
+    Object.assign(state, {
+      cooldownUntil: null,
+      backoffLevel: 0,
+      lastStatus: 200,
+      lastErrorType: null,
+      lastError: null,
+      lastErrorAt: null,
+      lastSuccessAt: new Date(nowMs).toISOString(),
+    });
+    updated = true;
+    return current;
+  });
+  return { updated, pool };
+}
+
+export async function clearMihomoRouteCooldown({
+  proxyPoolId,
+  route,
+  businessProviderId,
+  mutatePool = defaultMutateProxyPool,
+  nowMs = Date.now(),
+} = {}) {
+  let updated = false;
+  const pool = await mutatePool(proxyPoolId, (current) => {
+    if (!current?.mihomo || typeof current.mihomo !== "object") return current;
+    const state = getMutableBusinessState(current, route, businessProviderId);
+    Object.assign(state, {
+      cooldownUntil: null,
+      backoffLevel: 0,
+      lastErrorType: null,
+      lastError: null,
+      lastErrorAt: null,
+      lastSuccessAt: state.lastSuccessAt || new Date(nowMs).toISOString(),
+    });
+    updated = true;
+    return current;
+  });
+  return { updated, pool };
 }

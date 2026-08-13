@@ -37,6 +37,22 @@ export function errorResponse(statusCode, message) {
   });
 }
 
+/** Parse Retry-After delta-seconds or HTTP-date into an epoch millisecond. */
+export function parseRetryAfter(value, nowMs = Date.now()) {
+  if (value === undefined || value === null) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  if (/^\d+(?:\.\d+)?$/.test(raw)) {
+    const seconds = Number(raw);
+    if (!Number.isFinite(seconds) || seconds < 0) return null;
+    return nowMs + Math.round(seconds * 1000);
+  }
+
+  const timestamp = Date.parse(raw);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
 /**
  * Write error to SSE stream (for streaming)
  * @param {WritableStreamDefaultWriter} writer - Stream writer
@@ -63,13 +79,20 @@ export async function parseUpstreamError(response, executor = null) {
     bodyText = "";
   }
 
+  const retryAfterMs = parseRetryAfter(response?.headers?.get?.("retry-after"));
+
   // Let executor-specific parser extract provider-specific fields (e.g. codex resetsAtMs)
   if (executor && typeof executor.parseError === "function") {
     try {
       const parsed = executor.parseError(response, bodyText);
       if (parsed && typeof parsed === "object") {
         const msg = parsed.message || DEFAULT_ERROR_MESSAGES[response.status] || `Upstream error: ${response.status}`;
-        return { statusCode: parsed.status || response.status, message: msg, resetsAtMs: parsed.resetsAtMs };
+        const providerReset = Number(parsed.resetsAtMs);
+        return {
+          statusCode: parsed.status || response.status,
+          message: msg,
+          resetsAtMs: Number.isFinite(providerReset) ? providerReset : retryAfterMs,
+        };
       }
     } catch { /* fall through to default parsing */ }
   }
@@ -85,7 +108,7 @@ export async function parseUpstreamError(response, executor = null) {
   const messageStr = typeof message === "string" ? message : JSON.stringify(message);
   const finalMessage = messageStr || DEFAULT_ERROR_MESSAGES[response.status] || `Upstream error: ${response.status}`;
 
-  return { statusCode: response.status, message: finalMessage };
+  return { statusCode: response.status, message: finalMessage, resetsAtMs: retryAfterMs };
 }
 
 /**
