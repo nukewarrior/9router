@@ -323,7 +323,11 @@ export async function executeMihomoNoAuthRoute({
         lastRateLimitUntil = new Date(Date.now() + cooldownMs).toISOString();
       }
       routeContext.deprioritizedRegions.add(route.region);
-      log.info("MIHOMO", `node cooldown=${Math.ceil(failure.cooldownMs / 1000)}s node="${route.nodeName}"`);
+      if (failure.scope === "egress") {
+        log.info("MIHOMO", `egress cooldown=${Math.ceil(failure.cooldownMs / 1000)}s identity="${failure.identityKey}" business=${provider}`);
+      } else {
+        log.info("MIHOMO", `node cooldown=${Math.ceil(failure.cooldownMs / 1000)}s node="${route.nodeName}"`);
+      }
     } catch (error) {
       return mihomoErrorResponse(error);
     }

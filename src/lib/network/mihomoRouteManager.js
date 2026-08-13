@@ -6,8 +6,9 @@ import { mihomoSelectorMutex } from "./keyedMutex.js";
 import {
   attachMihomoNodeEgress,
   discoverMihomoNodeDirectory,
+  getMihomoEgressBusinessState,
   getMihomoNodeBusinessState,
-  isMihomoEgressFresh,
+  isMihomoStableEgress,
 } from "./mihomoState.js";
 
 function text(value) {
@@ -145,10 +146,25 @@ export function buildMihomoRoute({ proxyPoolId, proxyProvider, nodeName, region,
   };
 }
 
-function cooldownExpiry(pool, node, businessProviderId) {
-  const state = getMihomoNodeBusinessState(pool, node, businessProviderId);
-  const timestamp = Date.parse(state.cooldownUntil || "");
+function parseCooldownUntil(state) {
+  const timestamp = Date.parse(state?.cooldownUntil || "");
   return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function cooldownExpiries(pool, node, businessProviderId, config, nowMs) {
+  const expiries = [];
+  const nodeExpiry = parseCooldownUntil(getMihomoNodeBusinessState(pool, node, businessProviderId));
+  if (nodeExpiry !== null) expiries.push(nodeExpiry);
+  if (config?.egressScopedCooldown === true && isMihomoStableEgress(node.egress, nowMs)) {
+    const egressState = getMihomoEgressBusinessState(pool, node.egress.identityKey, businessProviderId);
+    const egressExpiry = parseCooldownUntil(egressState);
+    if (egressExpiry !== null) expiries.push(egressExpiry);
+  }
+  return expiries;
+}
+
+function isMihomoRouteCooling(pool, node, businessProviderId, config, nowMs) {
+  return cooldownExpiries(pool, node, businessProviderId, config, nowMs).some((expiry) => expiry > nowMs);
 }
 
 function getRotationState(poolId, businessProviderId) {
@@ -168,7 +184,7 @@ function getRotationState(poolId, businessProviderId) {
 }
 
 export function getMihomoEgressCandidateKey(node, nowMs = Date.now()) {
-  if (node?.egress?.confidence === "stable" && node.egress.identityKey && isMihomoEgressFresh(node.egress, nowMs)) {
+  if (isMihomoStableEgress(node?.egress, nowMs)) {
     return node.egress.identityKey;
   }
   return `node:${node?.key || `${node?.proxyProvider || "__selector__"}\0${node?.nodeName || ""}`}`;
@@ -243,11 +259,12 @@ function chooseEgressCandidate(nodes, config, routeContext, poolId, businessProv
   return { node: selected, egressKey: groupKey };
 }
 
-function earliestCooldownUntil(pool, nodes, businessProviderId, nowMs) {
+function earliestCooldownUntil(pool, nodes, businessProviderId, config, nowMs) {
   let earliest = null;
   for (const node of nodes) {
-    const expiry = cooldownExpiry(pool, node, businessProviderId);
-    if (expiry && expiry > nowMs && (earliest === null || expiry < earliest)) earliest = expiry;
+    for (const expiry of cooldownExpiries(pool, node, businessProviderId, config, nowMs)) {
+      if (expiry > nowMs && (earliest === null || expiry < earliest)) earliest = expiry;
+    }
   }
   return earliest ? new Date(earliest).toISOString() : null;
 }
@@ -288,8 +305,7 @@ export async function prepareMihomoRouteAttempt({
 
   const availableNodes = directory.nodes.filter((node) => {
     if (routeContext.attemptedNodeKeys.has(node.key)) return false;
-    const expiry = cooldownExpiry(pool, node, businessProviderId);
-    return !expiry || expiry <= nowMs;
+    return !isMihomoRouteCooling(pool, node, businessProviderId, config, nowMs);
   });
   const availableEgressNodes = config.preferDistinctEgress
     ? availableNodes.filter((node) => !routeContext.attemptedEgressKeys.has(getMihomoEgressCandidateKey(node, nowMs)))
@@ -307,7 +323,7 @@ export async function prepareMihomoRouteAttempt({
       route: null,
       directory,
       effectiveMaxAttempts,
-      earliestCooldown: earliestCooldownUntil(pool, directory.nodes, businessProviderId, nowMs),
+      earliestCooldown: earliestCooldownUntil(pool, directory.nodes, businessProviderId, config, nowMs),
     };
   }
 
@@ -323,7 +339,7 @@ export async function prepareMihomoRouteAttempt({
       route: null,
       directory,
       effectiveMaxAttempts,
-      earliestCooldown: earliestCooldownUntil(pool, directory.nodes, businessProviderId, nowMs),
+      earliestCooldown: earliestCooldownUntil(pool, directory.nodes, businessProviderId, config, nowMs),
     };
   }
 
@@ -357,7 +373,7 @@ export async function prepareMihomoRouteAttempt({
     shadowRoute,
     directory,
     effectiveMaxAttempts,
-    earliestCooldown: earliestCooldownUntil(pool, directory.nodes, businessProviderId, nowMs),
+    earliestCooldown: earliestCooldownUntil(pool, directory.nodes, businessProviderId, config, nowMs),
   };
 }
 

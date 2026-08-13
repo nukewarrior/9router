@@ -163,6 +163,7 @@ export function evaluateEgressProbeSamples(samples = [], {
     expiresAt,
     lastProbeAt: nowMs,
     lastProbeError: normalizedErrors.at(-1) || (confidence === "unknown" ? "No valid egress sample" : null),
+    needsProbe: confidence === "unknown" || normalizedErrors.length > 0,
   };
 }
 

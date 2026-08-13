@@ -87,9 +87,9 @@ beforeEach(() => {
 describe("Mihomo egress-aware scheduling", () => {
   it("groups same-IP nodes, including nodes from different providers", () => {
     const nodes = [
-      { key: "sub-a\0TW-A", nodeName: "TW-A", proxyProvider: "sub-a", region: "TW", egress: { confidence: "stable", identityKey: "4:1.2.3.4", expiresAt: 9999 } },
-      { key: "sub-b\0TW-B", nodeName: "TW-B", proxyProvider: "sub-b", region: "TW", egress: { confidence: "stable", identityKey: "4:1.2.3.4", expiresAt: 9999 } },
-      { key: "sub-a\0TW-C", nodeName: "TW-C", proxyProvider: "sub-a", region: "TW", egress: { confidence: "stable", identityKey: "4:1.2.3.5", expiresAt: 9999 } },
+      { key: "sub-a\0TW-A", nodeName: "TW-A", proxyProvider: "sub-a", region: "TW", egress: { ip: "1.2.3.4", family: 4, confidence: "stable", identityKey: "4:1.2.3.4", expiresAt: 9999 } },
+      { key: "sub-b\0TW-B", nodeName: "TW-B", proxyProvider: "sub-b", region: "TW", egress: { ip: "1.2.3.4", family: 4, confidence: "stable", identityKey: "4:1.2.3.4", expiresAt: 9999 } },
+      { key: "sub-a\0TW-C", nodeName: "TW-C", proxyProvider: "sub-a", region: "TW", egress: { ip: "1.2.3.5", family: 4, confidence: "stable", identityKey: "4:1.2.3.5", expiresAt: 9999 } },
     ];
     const groups = groupMihomoNodesByEgress(nodes, 1000);
     expect(groups.get("4:1.2.3.4").map((node) => node.nodeName)).toEqual(["TW-A", "TW-B"]);

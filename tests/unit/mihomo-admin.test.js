@@ -80,6 +80,9 @@ describe("Mihomo admin operations", () => {
         },
       },
     };
+    pool.mihomoState.egressIdentities["4:61.219.114.43"] = {
+      business: { opencode: { cooldownUntil: new Date(Date.now() + 60000).toISOString(), backoffLevel: 1 } },
+    };
     const result = await getMihomoNodeStatus({ pool, makeClient: () => fakeClient() });
     expect(result.selector).toMatchObject({ name: "selector", now: "🇹🇼 TW-A30" });
     expect(result.nodes[0].providerState.opencode).toMatchObject({ status: "cooldown", lastStatus: 429 });
@@ -90,6 +93,7 @@ describe("Mihomo admin operations", () => {
       exitConfidence: "stable",
       exitFresh: true,
       exitGroupSize: 1,
+      exitCooldownUntil: expect.any(String),
     });
     expect(result.nodes[1].providerState.opencode.status).toBe("unknown");
     expect(result.summary).toMatchObject({ leafNodes: 2, probedNodes: 1, freshStableMappings: 1, distinctExitIps: 1 });

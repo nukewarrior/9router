@@ -1,4 +1,4 @@
-import { mutateProxyPool as defaultMutateProxyPool } from "@/models";
+import { getProxyPoolById as defaultGetProxyPoolById, mutateProxyPool as defaultMutateProxyPool } from "@/models";
 import { normalizeMihomoConfig } from "./mihomoConfig.js";
 import { classifyRateLimitError, isIpCandidateRateLimitError } from "open-sse/services/errorClassification.js";
 
@@ -270,6 +270,7 @@ function normalizeEgressRecord(value) {
     expiresAt: Number.isFinite(Number(value.expiresAt)) ? Number(value.expiresAt) : null,
     lastProbeAt: Number.isFinite(Number(value.lastProbeAt)) ? Number(value.lastProbeAt) : null,
     lastProbeError: text(value.lastProbeError) || null,
+    needsProbe: value.needsProbe === true,
   };
 }
 
@@ -285,9 +286,13 @@ export function isMihomoEgressFresh(egress, nowMs = Date.now()) {
 }
 
 export function isMihomoStableEgress(egress, nowMs = Date.now()) {
+  const family = Number(egress?.family);
+  const identityKey = text(egress?.identityKey);
   return Boolean(
     egress?.confidence === "stable"
-    && text(egress.identityKey)
+    && (family === 4 || family === 6)
+    && text(egress?.ip)
+    && identityKey.startsWith(`${family}:`)
     && isMihomoEgressFresh(egress, nowMs),
   );
 }
@@ -376,6 +381,44 @@ function truncateError(errorText) {
   return normalized.slice(0, 500);
 }
 
+function selectMihomoBusinessScope(pool, config, route, businessProviderId, nowMs) {
+  const egress = getMihomoNodeEgress(pool, route);
+  if (config.egressScopedCooldown === true && isMihomoStableEgress(egress, nowMs)) {
+    return {
+      kind: "egress",
+      identityKey: egress.identityKey,
+      egress,
+      state: getMihomoEgressBusinessState(pool, egress.identityKey, businessProviderId),
+    };
+  }
+  return {
+    kind: "node",
+    identityKey: null,
+    egress,
+    state: getMihomoNodeBusinessState(pool, route, businessProviderId),
+  };
+}
+
+function assignMihomoFailureState(state, { status, error, lastErrorType, nowMs, cooldownMs }) {
+  const previousLevel = Math.max(0, Number(state.backoffLevel) || 0);
+  Object.assign(state, {
+    cooldownUntil: new Date(nowMs + cooldownMs).toISOString(),
+    backoffLevel: previousLevel + 1,
+    lastStatus: Number(status) || status || null,
+    lastErrorType,
+    lastError: truncateError(error),
+    lastErrorAt: new Date(nowMs).toISOString(),
+  });
+}
+
+function shouldPersistSuccess(state, nowMs) {
+  if (!state || typeof state !== "object") return true;
+  if (Number(state.backoffLevel) > 0 || state.lastErrorType || state.lastError || Number(state.lastStatus) >= 400) return true;
+  if (!state.lastSuccessAt) return true;
+  const lastSuccessAt = Date.parse(state.lastSuccessAt);
+  return !Number.isFinite(lastSuccessAt) || nowMs - lastSuccessAt > 60000;
+}
+
 export async function recordMihomoNodeEgress({
   proxyPoolId,
   route,
@@ -399,13 +442,14 @@ export async function recordMihomoNodeEgress({
       expiresAt: null,
       lastProbeAt: nowMs,
       lastProbeError: "No valid egress sample",
+      needsProbe: true,
     };
     const previous = normalizeEgressRecord(nodeState.egress);
     // A failed refresh should not erase a previously observed identity. The
     // mapping naturally becomes stale through expiresAt and routing will then
     // fall back to node semantics.
     nodeState.egress = next.confidence === "unknown" && previous?.identityKey
-      ? { ...previous, lastProbeAt: next.lastProbeAt || nowMs, lastProbeError: next.lastProbeError }
+      ? { ...previous, lastProbeAt: next.lastProbeAt || nowMs, lastProbeError: next.lastProbeError, needsProbe: true }
       : next;
     updated = true;
     return current;
@@ -470,19 +514,18 @@ export async function recordMihomoRouteFailure({
   const pool = await mutatePool(proxyPoolId, (current) => {
     if (!current?.mihomo || typeof current.mihomo !== "object") return current;
     const config = normalizeMihomoConfig(current.mihomo);
-    const previous = getMutableBusinessState(current, route, businessProviderId);
+    const scope = selectMihomoBusinessScope(current, config, route, businessProviderId, nowMs);
+    const previous = scope.kind === "egress"
+      ? getMutableEgressBusinessState(current, scope.identityKey, businessProviderId)
+      : getMutableBusinessState(current, route, businessProviderId);
     const cooldownMs = getCooldownMs(config, previous, resetsAtMs, nowMs);
-    const previousLevel = Math.max(0, Number(previous.backoffLevel) || 0);
     const lastErrorType = classifyRateLimitError(status, error);
-    Object.assign(previous, {
-      cooldownUntil: new Date(nowMs + cooldownMs).toISOString(),
-      backoffLevel: previousLevel + 1,
-      lastStatus: Number(status) || status || null,
-      lastErrorType,
-      lastError: truncateError(error),
-      lastErrorAt: new Date(nowMs).toISOString(),
-    });
-    outcome = { updated: true, cooldownMs, lastErrorType };
+    assignMihomoFailureState(previous, { status, error, lastErrorType, nowMs, cooldownMs });
+    if (scope.kind === "node") {
+      const { nodeState } = getMutableNodeState(current, route);
+      if (nodeState.egress && typeof nodeState.egress === "object") nodeState.egress.needsProbe = true;
+    }
+    outcome = { updated: true, cooldownMs, lastErrorType, scope: scope.kind, identityKey: scope.identityKey };
     return current;
   });
   outcome.pool = pool;
@@ -494,12 +537,31 @@ export async function recordMihomoRouteSuccess({
   route,
   businessProviderId,
   mutatePool = defaultMutateProxyPool,
+  getPool = null,
   nowMs = Date.now(),
 } = {}) {
+  const readPool = getPool || (mutatePool === defaultMutateProxyPool ? defaultGetProxyPoolById : null);
+  if (readPool) {
+    const snapshot = await readPool(proxyPoolId);
+    if (!snapshot?.mihomo || typeof snapshot.mihomo !== "object") return { updated: false, pool: snapshot || null };
+    const config = normalizeMihomoConfig(snapshot.mihomo);
+    const scope = selectMihomoBusinessScope(snapshot, config, route, businessProviderId, nowMs);
+    if (!shouldPersistSuccess(scope.state, nowMs)) {
+      return { updated: false, pool: snapshot, scope: scope.kind, identityKey: scope.identityKey };
+    }
+  }
   let updated = false;
+  let scopeName = "node";
+  let identityKey = null;
   const pool = await mutatePool(proxyPoolId, (current) => {
     if (!current?.mihomo || typeof current.mihomo !== "object") return current;
-    const state = getMutableBusinessState(current, route, businessProviderId);
+    const config = normalizeMihomoConfig(current.mihomo);
+    const scope = selectMihomoBusinessScope(current, config, route, businessProviderId, nowMs);
+    scopeName = scope.kind;
+    identityKey = scope.identityKey;
+    const state = scope.kind === "egress"
+      ? getMutableEgressBusinessState(current, scope.identityKey, businessProviderId)
+      : getMutableBusinessState(current, route, businessProviderId);
     Object.assign(state, {
       cooldownUntil: null,
       backoffLevel: 0,
@@ -512,7 +574,7 @@ export async function recordMihomoRouteSuccess({
     updated = true;
     return current;
   });
-  return { updated, pool };
+  return { updated, pool, scope: scopeName, identityKey };
 }
 
 export async function clearMihomoRouteCooldown({
