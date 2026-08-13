@@ -3,10 +3,13 @@ import { createMihomoClient, MIHOMO_ERROR_CODES, validateMihomoControllerUrl } f
 import { normalizeMihomoConfig } from "./mihomoConfig.js";
 import { isMihomoProxyPool } from "./proxyPoolTypes.js";
 import { mihomoSelectorMutex } from "./keyedMutex.js";
+import { discoverMihomoNodeDirectory, getMihomoNodeBusinessState } from "./mihomoState.js";
 
 function text(value) {
   return value === undefined || value === null ? "" : String(value).trim();
 }
+
+const routeRotationState = new Map();
 
 function selectorKey(controllerUrl, selectorName) {
   return `${validateMihomoControllerUrl(controllerUrl)}\0${selectorName}`;
@@ -133,4 +136,132 @@ export function buildMihomoRoute({ proxyPoolId, proxyProvider, nodeName, region,
     attempt: Number.isFinite(attempt) ? attempt : 1,
     routeId: routeId || `${proxyPoolId}:${nodeName}:${Date.now()}`,
   };
+}
+
+function cooldownExpiry(pool, node, businessProviderId) {
+  const state = getMihomoNodeBusinessState(pool, node, businessProviderId);
+  const timestamp = Date.parse(state.cooldownUntil || "");
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function getRotationState(poolId, businessProviderId) {
+  const key = `${poolId}\0${businessProviderId}`;
+  let state = routeRotationState.get(key);
+  if (!state) {
+    state = { nodeCursorByRegion: new Map() };
+    routeRotationState.set(key, state);
+  }
+  return state;
+}
+
+function chooseCandidate(nodes, config, routeContext, poolId, businessProviderId) {
+  const preferred = nodes.filter((node) => !routeContext.deprioritizedRegions.has(node.region));
+  const pool = preferred.length > 0 ? preferred : nodes;
+  if (pool.length === 0) return null;
+
+  const order = new Map((config.regionOrder || []).map((region, index) => [region, index]));
+  const grouped = new Map();
+  for (const node of pool) {
+    if (!grouped.has(node.region)) grouped.set(node.region, []);
+    grouped.get(node.region).push(node);
+  }
+  const regions = [...grouped.keys()].sort((a, b) => (order.get(a) ?? Number.MAX_SAFE_INTEGER) - (order.get(b) ?? Number.MAX_SAFE_INTEGER) || a.localeCompare(b));
+  const rotation = getRotationState(poolId, businessProviderId);
+  const region = regions[0];
+  const regionNodes = grouped.get(region).sort((a, b) => a.key.localeCompare(b.key));
+  const cursor = rotation.nodeCursorByRegion.get(region) || 0;
+  const selected = regionNodes[cursor % regionNodes.length];
+  rotation.nodeCursorByRegion.set(region, cursor + 1);
+  return selected;
+}
+
+function earliestCooldownUntil(pool, nodes, businessProviderId, nowMs) {
+  let earliest = null;
+  for (const node of nodes) {
+    const expiry = cooldownExpiry(pool, node, businessProviderId);
+    if (expiry && expiry > nowMs && (earliest === null || expiry < earliest)) earliest = expiry;
+  }
+  return earliest ? new Date(earliest).toISOString() : null;
+}
+
+/**
+ * Discover and choose one node for a request. The routeContext is deliberately
+ * request-scoped; only the fairness cursor lives in process memory.
+ */
+export async function prepareMihomoRouteAttempt({
+  poolId,
+  businessProviderId,
+  routeContext,
+  getPool = getProxyPoolById,
+  makeClient = createMihomoClient,
+  nowMs = Date.now(),
+} = {}) {
+  if (!routeContext || !(routeContext.attemptedNodeKeys instanceof Set) || !(routeContext.deprioritizedRegions instanceof Set)) {
+    throw new TypeError("routeContext must contain attemptedNodeKeys and deprioritizedRegions sets");
+  }
+  const { pool, config } = await loadManagedPool(poolId, getPool);
+  const client = makeClient({
+    controllerUrl: config.controllerUrl,
+    secret: config.controllerSecret,
+    timeoutMs: config.controllerTimeoutMs,
+  });
+  const directory = await discoverMihomoNodeDirectory({
+    poolId,
+    client,
+    selectorName: config.selectorName,
+    providerNames: config.providerNames,
+    includeRegex: config.includeRegex,
+    excludeRegex: config.excludeRegex,
+    ttlMs: config.syncTtlMs,
+    nowMs,
+  });
+
+  const availableNodes = directory.nodes.filter((node) => {
+    if (routeContext.attemptedNodeKeys.has(node.key)) return false;
+    const expiry = cooldownExpiry(pool, node, businessProviderId);
+    return !expiry || expiry <= nowMs;
+  });
+  if (routeContext.maxAttempts === undefined) {
+    routeContext.maxAttempts = Math.min(config.maxAttemptsPerRequest, availableNodes.length);
+  }
+
+  const effectiveMaxAttempts = routeContext.maxAttempts;
+  if (routeContext.attempts >= effectiveMaxAttempts) {
+    return {
+      route: null,
+      directory,
+      effectiveMaxAttempts,
+      earliestCooldown: earliestCooldownUntil(pool, directory.nodes, businessProviderId, nowMs),
+    };
+  }
+
+  const candidate = chooseCandidate(availableNodes, config, routeContext, poolId, businessProviderId);
+  if (!candidate) {
+    return {
+      route: null,
+      directory,
+      effectiveMaxAttempts,
+      earliestCooldown: earliestCooldownUntil(pool, directory.nodes, businessProviderId, nowMs),
+    };
+  }
+
+  routeContext.attempts += 1;
+  routeContext.attemptedNodeKeys.add(candidate.key);
+  return {
+    route: buildMihomoRoute({
+      proxyPoolId: poolId,
+      proxyProvider: candidate.proxyProvider,
+      nodeName: candidate.nodeName,
+      region: candidate.region,
+      selectorName: directory.selectorName || config.selectorName,
+      attempt: routeContext.attempts,
+    }),
+    directory,
+    effectiveMaxAttempts,
+    earliestCooldown: earliestCooldownUntil(pool, directory.nodes, businessProviderId, nowMs),
+  };
+}
+
+export function clearMihomoRotationState() {
+  routeRotationState.clear();
 }

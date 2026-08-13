@@ -1,8 +1,9 @@
-import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings, getProxyPools } from "@/lib/localDb";
+import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings, getProxyPools, getProxyPoolById } from "@/lib/localDb";
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
+import { isMihomoProxyPool } from "@/lib/network/proxyPoolTypes.js";
 import * as log from "../utils/logger.js";
 
 // Mutex to prevent race conditions during account selection
@@ -47,12 +48,28 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       const override = (settings.providerStrategies || {})[providerId] || {};
       const strategy = override.rotateStrategy || "none";
       let pickedId = override.proxyPoolId || null;
+      const configuredPool = pickedId ? await getProxyPoolById(pickedId) : null;
+      if (pickedId && strategy !== "none") {
+        if (isMihomoProxyPool(configuredPool)) {
+          return {
+            configurationError: "Mihomo managed proxy pools cannot be used with outer pool rotation. Set rotateStrategy to \"none\".",
+            configurationErrorCode: "MIHOMO_OUTER_ROTATION",
+          };
+        }
+      }
       if (strategy !== "none") {
         const allPools = await getProxyPools({ isActive: true });
-        const poolIds = allPools.filter(p => p.proxyUrl).map(p => p.id);
+        const poolIds = allPools.filter(p => p.proxyUrl && !isMihomoProxyPool(p)).map(p => p.id);
         pickedId = pickProxyPoolId(poolIds, strategy, providerId);
       }
       const resolvedProxy = await resolveConnectionProxyConfig({ proxyPoolId: pickedId || "" });
+      const mihomoManaged = isMihomoProxyPool(resolvedProxy.proxyPool);
+      if (isMihomoProxyPool(configuredPool) && !mihomoManaged) {
+        return {
+          configurationError: "Mihomo managed proxy pool is unavailable or invalid; refusing to route DIRECT.",
+          configurationErrorCode: "MIHOMO_POOL_UNAVAILABLE",
+        };
+      }
       return {
         id: "noauth",
         connectionName: "Public",
@@ -63,6 +80,8 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           connectionProxyUrl: resolvedProxy.connectionProxyUrl,
           connectionNoProxy: resolvedProxy.connectionNoProxy,
           strictProxy: resolvedProxy.strictProxy === true,
+          mihomoManaged,
+          proxyBackend: mihomoManaged ? "mihomo" : resolvedProxy.source,
           connectionProxyPoolId: resolvedProxy.proxyPoolId || null,
           vercelRelayUrl: resolvedProxy.vercelRelayUrl || "",
         },

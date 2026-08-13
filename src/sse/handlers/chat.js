@@ -13,7 +13,7 @@ import { handleChatCore } from "open-sse/handlers/chatCore.js";
 import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
 import { getTransform as getPxpipeTransform } from "@/lib/pxpipe/loader.js";
 import { appendPxpipeEvent } from "@/lib/pxpipe/events.js";
-import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
+import { errorResponse, unavailableResponse, mihomoUnavailableResponse } from "open-sse/utils/error.js";
 import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
@@ -22,6 +22,15 @@ import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
+import {
+  prepareMihomoRouteAttempt,
+  withMihomoSelectorLease,
+} from "@/lib/network/mihomoRouteManager.js";
+import {
+  recordMihomoRouteFailure,
+  recordMihomoRouteSuccess,
+} from "@/lib/network/mihomoState.js";
+import { isIpCandidateRateLimitError } from "open-sse/services/errorClassification.js";
 
 /**
  * Handle chat completion request
@@ -154,6 +163,187 @@ export async function handleChat(request, clientRawRequest = null) {
   return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey);
 }
 
+async function executeChatCoreAttempt({
+  body,
+  provider,
+  model,
+  credentials,
+  clientRawRequest,
+  request,
+  apiKey,
+  userAgent,
+  proxyOptionsOverride = null,
+  onCredentialsRefreshed,
+  onRequestSuccess,
+}) {
+  const chatSettings = await getSettings();
+  const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
+  return handleChatCore({
+    body: { ...body, model: `${provider}/${model}` },
+    modelInfo: { provider, model },
+    credentials,
+    log,
+    clientRawRequest,
+    connectionId: credentials.connectionId || credentials.id || "noauth",
+    userAgent,
+    apiKey,
+    ccFilterNaming: !!chatSettings.ccFilterNaming,
+    rtkEnabled: !!chatSettings.rtkEnabled,
+    headroomEnabled: !!chatSettings.headroomEnabled,
+    headroomUrl: chatSettings.headroomUrl || DEFAULT_HEADROOM_URL,
+    headroomCompressUserMessages: !!chatSettings.headroomCompressUserMessages,
+    cavemanEnabled: !!chatSettings.cavemanEnabled,
+    cavemanLevel: chatSettings.cavemanLevel || "full",
+    ponytailEnabled: !!chatSettings.ponytailEnabled,
+    ponytailLevel: chatSettings.ponytailLevel || "full",
+    pxpipeEnabled: !!chatSettings.pxpipeEnabled,
+    pxpipeMinChars: chatSettings.pxpipeMinChars,
+    pxpipeTimeoutMs: chatSettings.pxpipeTimeoutMs,
+    // Lazily warms the in-process module on first use; null when not installed (fail-open)
+    pxpipeTransform: chatSettings.pxpipeEnabled ? await getPxpipeTransform() : null,
+    onPxpipeEvent: appendPxpipeEvent,
+    providerThinking,
+    proxyOptionsOverride,
+    // Detect source format by endpoint + body
+    sourceFormatOverride: request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null,
+    onCredentialsRefreshed,
+    onRequestSuccess,
+  });
+}
+
+function mihomoErrorResponse(error) {
+  const code = error?.code || "MIHOMO_ROUTE_FAILED";
+  const status = code === "MIHOMO_INVALID_CONFIG" || code === "MIHOMO_INVALID_STATE_KEY" ? HTTP_STATUS.BAD_REQUEST : HTTP_STATUS.BAD_GATEWAY;
+  return errorResponse(status, `[${code}] ${error?.message || "Mihomo route failed"}`);
+}
+
+export async function executeMihomoNoAuthRoute({
+  body,
+  provider,
+  model,
+  credentials,
+  clientRawRequest,
+  request,
+  apiKey,
+  userAgent,
+  deps = {},
+}) {
+  const poolId = credentials.providerSpecificData?.connectionProxyPoolId;
+  if (!poolId) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Mihomo managed routing requires a proxy pool");
+
+  const prepareRoute = deps.prepareRoute || prepareMihomoRouteAttempt;
+  const leaseRoute = deps.leaseRoute || withMihomoSelectorLease;
+  const recordFailure = deps.recordFailure || recordMihomoRouteFailure;
+  const recordSuccess = deps.recordSuccess || recordMihomoRouteSuccess;
+  const executeAttempt = deps.executeAttempt || executeChatCoreAttempt;
+
+  const routeContext = {
+    attemptedNodeKeys: new Set(),
+    deprioritizedRegions: new Set(),
+    attempts: 0,
+  };
+  let lastResult = null;
+  let lastPrepared = null;
+
+  while (true) {
+    let prepared;
+    try {
+      prepared = await prepareRoute({
+        poolId,
+        businessProviderId: provider,
+        routeContext,
+      });
+    } catch (error) {
+      return mihomoErrorResponse(error);
+    }
+    lastPrepared = prepared;
+    if (!prepared.route) break;
+
+    const route = prepared.route;
+    log.info("MIHOMO", `pool=${poolId} selector="${route.selectorName}" attempt=${route.attempt}/${prepared.effectiveMaxAttempts} node="${route.nodeName}" region=${route.region}`);
+
+    let result;
+    try {
+      result = await leaseRoute({
+        poolId,
+        nodeName: route.nodeName,
+        route,
+      }, async (proxyOptions) => executeAttempt({
+        body,
+        provider,
+        model,
+        credentials,
+        clientRawRequest,
+        request,
+        apiKey,
+        userAgent,
+        proxyOptionsOverride: proxyOptions,
+      }));
+    } catch (error) {
+      // Controller and Selector failures are control-plane failures, not node
+      // failures. Never mark a candidate or continue with an unknown Selector.
+      return mihomoErrorResponse(error);
+    }
+
+    if (result.success) {
+      try {
+        await recordSuccess({ proxyPoolId: poolId, route, businessProviderId: provider });
+      } catch (error) {
+        return mihomoErrorResponse(error);
+      }
+      log.info("MIHOMO", `success node="${route.nodeName}" region=${route.region}`);
+      return result.response;
+    }
+
+    lastResult = result;
+    if (!isIpCandidateRateLimitError(result.status, result.error)) {
+      // 400/401/404, listener failures, and generic 5xx retain existing
+      // executor semantics and do not trigger node rotation.
+      return result.response;
+    }
+
+    log.warn("MIHOMO", `upstream node="${route.nodeName}" status=${result.status} error=${result.error}`);
+    try {
+      const failure = await recordFailure({
+        proxyPoolId: poolId,
+        route,
+        businessProviderId: provider,
+        status: result.status,
+        error: result.error,
+        resetsAtMs: result.resetsAtMs,
+      });
+      if (!failure.updated) return result.response;
+      routeContext.deprioritizedRegions.add(route.region);
+      log.info("MIHOMO", `node cooldown=${Math.ceil(failure.cooldownMs / 1000)}s node="${route.nodeName}"`);
+    } catch (error) {
+      return mihomoErrorResponse(error);
+    }
+  }
+
+  if (lastResult) {
+    const lastError = lastResult.error || "rate limited";
+    const status = lastResult.status || HTTP_STATUS.RATE_LIMITED;
+    return mihomoUnavailableResponse(
+      status,
+      `All eligible Mihomo routes are temporarily rate-limited. Last error: ${lastError}`,
+      lastPrepared?.earliestCooldown || null,
+    );
+  }
+
+  if (lastPrepared?.earliestCooldown) {
+    return mihomoUnavailableResponse(
+      HTTP_STATUS.RATE_LIMITED,
+      "All eligible Mihomo routes are temporarily rate-limited",
+      lastPrepared.earliestCooldown,
+    );
+  }
+
+  if (lastPrepared?.directory?.nodes?.length === 0) {
+    return errorResponse(HTTP_STATUS.SERVICE_UNAVAILABLE, "No eligible Mihomo leaf proxy nodes are available");
+  }
+  return errorResponse(HTTP_STATUS.SERVICE_UNAVAILABLE, "All eligible Mihomo routes are temporarily unavailable");
+}
+
 /**
  * Handle single model chat request
  */
@@ -227,6 +417,10 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   while (true) {
     const credentials = await getProviderCredentials(provider, excludeConnectionIds, model);
 
+    if (credentials?.configurationError) {
+      return errorResponse(HTTP_STATUS.BAD_REQUEST, credentials.configurationError);
+    }
+
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {
@@ -243,6 +437,19 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable");
     }
 
+    if (credentials.providerSpecificData?.mihomoManaged === true) {
+      return executeMihomoNoAuthRoute({
+        body,
+        provider,
+        model,
+        credentials,
+        clientRawRequest,
+        request,
+        apiKey,
+        userAgent,
+      });
+    }
+
     // Account selection shown in the unified "▶" line (acc:...)
     const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
 
@@ -256,36 +463,15 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       }
     }
 
-    // Use shared chatCore
-    const chatSettings = await getSettings();
-    const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
-    const result = await handleChatCore({
-      body: { ...body, model: `${provider}/${model}` },
-      modelInfo: { provider, model },
+    const result = await executeChatCoreAttempt({
+      body,
+      provider,
+      model,
       credentials: refreshedCredentials,
-      log,
       clientRawRequest,
-      connectionId: credentials.connectionId,
-      userAgent,
+      request,
       apiKey,
-      ccFilterNaming: !!chatSettings.ccFilterNaming,
-      rtkEnabled: !!chatSettings.rtkEnabled,
-      headroomEnabled: !!chatSettings.headroomEnabled,
-      headroomUrl: chatSettings.headroomUrl || DEFAULT_HEADROOM_URL,
-      headroomCompressUserMessages: !!chatSettings.headroomCompressUserMessages,
-      cavemanEnabled: !!chatSettings.cavemanEnabled,
-      cavemanLevel: chatSettings.cavemanLevel || "full",
-      ponytailEnabled: !!chatSettings.ponytailEnabled,
-      ponytailLevel: chatSettings.ponytailLevel || "full",
-      pxpipeEnabled: !!chatSettings.pxpipeEnabled,
-      pxpipeMinChars: chatSettings.pxpipeMinChars,
-      pxpipeTimeoutMs: chatSettings.pxpipeTimeoutMs,
-      // Lazily warms the in-process module on first use; null when not installed (fail-open)
-      pxpipeTransform: chatSettings.pxpipeEnabled ? await getPxpipeTransform() : null,
-      onPxpipeEvent: appendPxpipeEvent,
-      providerThinking,
-      // Detect source format by endpoint + body
-      sourceFormatOverride: request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null,
+      userAgent,
       onCredentialsRefreshed: async (newCreds) => {
         await updateProviderCredentials(credentials.connectionId, {
           ...newCreds,
@@ -295,7 +481,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       },
       onRequestSuccess: async () => {
         await clearAccountError(credentials.connectionId, credentials, model);
-      }
+      },
     });
 
     if (result.success) return result.response;

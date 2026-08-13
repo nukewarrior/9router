@@ -151,6 +151,22 @@ export function unavailableResponse(statusCode, message, retryAfter, retryAfterH
   );
 }
 
+export function mihomoUnavailableResponse(statusCode = 429, message, retryAfter = null) {
+  const retryAfterMs = retryAfter ? new Date(retryAfter).getTime() : NaN;
+  const retryAfterSec = Number.isFinite(retryAfterMs)
+    ? Math.max(Math.ceil((retryAfterMs - Date.now()) / 1000), 1)
+    : null;
+  const headers = {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+  };
+  if (retryAfterSec !== null) headers["Retry-After"] = String(retryAfterSec);
+  return new Response(JSON.stringify({ error: { message } }), {
+    status: statusCode,
+    headers,
+  });
+}
+
 /**
  * Format provider error with context
  * @param {Error} error - Original error
