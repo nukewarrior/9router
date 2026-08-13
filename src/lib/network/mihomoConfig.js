@@ -50,7 +50,8 @@ function validateRegex(value, fieldName) {
   if (!value) return "";
   try {
     // Validate at configuration time so a bad regex cannot break routing.
-    new RegExp(value);
+    const inlineFlags = value.match(/^\(\?([imsu]+)\)/i);
+    new RegExp(inlineFlags ? value.slice(inlineFlags[0].length) : value, inlineFlags?.[1] || "");
     return value;
   } catch {
     throw new TypeError(`${fieldName} must be a valid regular expression`);
