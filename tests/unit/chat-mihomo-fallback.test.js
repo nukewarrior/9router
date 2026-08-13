@@ -113,22 +113,24 @@ describe("Mihomo no-auth route fallback", () => {
       deps: {
         prepareRoute,
         leaseRoute: async (_args, callback) => callback({}, {}),
-        executeAttempt: async () => ({ success: false, status: 429, error: "rate limit", response: response(429) }),
+        executeAttempt: async () => ({ success: false, status: 500, error: "FreeUsageLimitError", response: response(500) }),
         recordFailure: async () => ({ updated: true, cooldownMs: 120000 }),
       },
     });
 
     expect(result.status).toBe(429);
     expect(Number(result.headers.get("Retry-After"))).toBeGreaterThan(0);
-    expect(await result.json()).toMatchObject({ error: { message: expect.stringContaining("temporarily rate-limited") } });
+    expect(await result.json()).toMatchObject({
+      error: { message: expect.stringContaining("Last upstream status: 500") },
+    });
   });
 
-  it("does not rotate non-rate-limit failures", async () => {
+  it("does not rotate generic 500 failures", async () => {
     const executeAttempt = vi.fn().mockResolvedValue({
       success: false,
-      status: 401,
-      error: "invalid credentials",
-      response: response(401),
+      status: 500,
+      error: "Internal Server Error",
+      response: response(500),
     });
     const prepareRoute = vi.fn().mockResolvedValue({
       route: route("TW-A30", "TW", 1),
@@ -149,7 +151,7 @@ describe("Mihomo no-auth route fallback", () => {
       },
     });
 
-    expect(result.status).toBe(401);
+    expect(result.status).toBe(500);
     expect(prepareRoute).toHaveBeenCalledTimes(1);
     expect(recordFailure).not.toHaveBeenCalled();
   });

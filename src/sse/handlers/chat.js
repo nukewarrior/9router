@@ -244,6 +244,7 @@ export async function executeMihomoNoAuthRoute({
   };
   let lastResult = null;
   let lastPrepared = null;
+  let lastRateLimitUntil = null;
 
   while (true) {
     let prepared;
@@ -313,6 +314,10 @@ export async function executeMihomoNoAuthRoute({
         resetsAtMs: result.resetsAtMs,
       });
       if (!failure.updated) return result.response;
+      const cooldownMs = Number(failure.cooldownMs);
+      if (Number.isFinite(cooldownMs) && cooldownMs >= 0) {
+        lastRateLimitUntil = new Date(Date.now() + cooldownMs).toISOString();
+      }
       routeContext.deprioritizedRegions.add(route.region);
       log.info("MIHOMO", `node cooldown=${Math.ceil(failure.cooldownMs / 1000)}s node="${route.nodeName}"`);
     } catch (error) {
@@ -322,11 +327,11 @@ export async function executeMihomoNoAuthRoute({
 
   if (lastResult) {
     const lastError = lastResult.error || "rate limited";
-    const status = lastResult.status || HTTP_STATUS.RATE_LIMITED;
+    const lastUpstreamStatus = lastResult.status || "unknown";
     return mihomoUnavailableResponse(
-      status,
-      `All eligible Mihomo routes are temporarily rate-limited. Last error: ${lastError}`,
-      lastPrepared?.earliestCooldown || null,
+      HTTP_STATUS.RATE_LIMITED,
+      `All eligible Mihomo routes are temporarily rate-limited. Last upstream status: ${lastUpstreamStatus}. Last error: ${lastError}`,
+      lastPrepared?.earliestCooldown || lastRateLimitUntil,
     );
   }
 
