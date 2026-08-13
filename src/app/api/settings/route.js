@@ -18,7 +18,9 @@ const PROTECTED_SETTING_KEYS = ["password", "mitmSudoEncrypted"];
 async function validateProviderStrategies(providerStrategies) {
   if (!providerStrategies || typeof providerStrategies !== "object" || Array.isArray(providerStrategies)) return;
   for (const strategy of Object.values(providerStrategies)) {
-    if (!strategy || strategy.rotateStrategy === "none" || !strategy.proxyPoolId) continue;
+    if (!strategy || !strategy.proxyPoolId) continue;
+    const rotateStrategy = strategy.rotateStrategy || "none";
+    if (rotateStrategy === "none") continue;
     const pool = await getProxyPoolById(strategy.proxyPoolId);
     if (isMihomoProxyPool(pool)) {
       const error = new Error("Mihomo managed proxy pools cannot be used with outer pool rotation. Set rotateStrategy to \"none\".");
@@ -26,6 +28,11 @@ async function validateProviderStrategies(providerStrategies) {
       throw error;
     }
   }
+}
+
+function settingsErrorStatus(error) {
+  const status = Number(error?.status);
+  return Number.isInteger(status) && status >= 400 && status <= 599 ? status : 500;
 }
 
 export async function GET() {
@@ -129,6 +136,6 @@ export async function PATCH(request) {
     return NextResponse.json(safeSettings, { headers: SETTINGS_RESPONSE_HEADERS });
   } catch (error) {
     console.log("Error updating settings:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: error.message }, { status: settingsErrorStatus(error) });
   }
 }

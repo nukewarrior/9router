@@ -13,18 +13,35 @@ const STRATEGIES = [
   { value: "random", label: "Random" },
 ];
 
+async function responseErrorMessage(response, fallback) {
+  try {
+    const data = await response.json();
+    if (data?.error) return String(data.error);
+  } catch {
+    // Keep the local fallback when the server did not return JSON.
+  }
+  return fallback;
+}
+
 export default function NoAuthProxyCard({ providerId }) {
   const [proxyPools, setProxyPools] = useState([]);
   const [proxyPoolId, setProxyPoolId] = useState(NONE_PROXY_POOL_VALUE);
   const [rotateStrategy, setRotateStrategy] = useState("none");
   const [saving, setSaving] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
+  const [saveError, setSaveError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
     Promise.all([
-      fetch("/api/proxy-pools?isActive=true", { cache: "no-store" }).then((r) => r.ok ? r.json() : { proxyPools: [] }),
-      fetch("/api/settings", { cache: "no-store" }).then((r) => r.ok ? r.json() : {}),
+      fetch("/api/proxy-pools?isActive=true", { cache: "no-store" }).then(async (response) => {
+        if (!response.ok) throw new Error(await responseErrorMessage(response, "Unable to load proxy pools"));
+        return response.json();
+      }),
+      fetch("/api/settings", { cache: "no-store" }).then(async (response) => {
+        if (!response.ok) throw new Error(await responseErrorMessage(response, "Unable to load proxy settings"));
+        return response.json();
+      }),
     ]).then(([poolData, settingsData]) => {
       if (cancelled) return;
       setProxyPools(poolData.proxyPools || []);
@@ -41,17 +58,35 @@ export default function NoAuthProxyCard({ providerId }) {
           body: JSON.stringify({
             providerStrategies: { ...(settingsData.providerStrategies || {}), [providerId]: repaired },
           }),
-        }).catch(() => {});
+        }).then(async (response) => {
+          if (response.ok || cancelled) return;
+          const message = await responseErrorMessage(response, "Unable to repair proxy settings");
+          setSaveError(message);
+          console.error("[NoAuthProxyCard] Automatic settings repair failed:", message);
+        }).catch((error) => {
+          if (cancelled) return;
+          const message = error?.message || "Unable to repair proxy settings";
+          setSaveError(message);
+          console.error("[NoAuthProxyCard] Automatic settings repair failed:", error);
+        });
       }
-    }).catch(() => {});
+    }).catch((error) => {
+      if (cancelled) return;
+      const message = error?.message || "Unable to load proxy settings";
+      setSaveError(message);
+      console.error("[NoAuthProxyCard] Loading proxy settings failed:", error);
+    });
     return () => { cancelled = true; };
   }, [providerId]);
 
-  const save = useCallback(async (poolId, strategy) => {
+  const save = useCallback(async (poolId, strategy, previousState = null) => {
     setSaving(true);
+    setSavedFlash(false);
+    setSaveError("");
     try {
       const res = await fetch("/api/settings", { cache: "no-store" });
-      const data = res.ok ? await res.json() : {};
+      if (!res.ok) throw new Error(await responseErrorMessage(res, "Unable to load proxy settings"));
+      const data = await res.json();
       const current = data.providerStrategies || {};
       const override = { ...(current[providerId] || {}) };
       if (poolId === NONE_PROXY_POOL_VALUE) delete override.proxyPoolId;
@@ -61,23 +96,33 @@ export default function NoAuthProxyCard({ providerId }) {
       const updated = { ...current };
       if (Object.keys(override).length === 0) delete updated[providerId];
       else updated[providerId] = override;
-      await fetch("/api/settings", {
+      const saveResponse = await fetch("/api/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ providerStrategies: updated }),
       });
+      if (!saveResponse.ok) {
+        throw new Error(await responseErrorMessage(saveResponse, "Failed to save proxy config"));
+      }
       setSavedFlash(true);
       setTimeout(() => setSavedFlash(false), 1500);
-    } catch (e) {
-      console.log("Save proxy config error:", e);
+    } catch (error) {
+      if (previousState) {
+        setProxyPoolId(previousState.proxyPoolId);
+        setRotateStrategy(previousState.rotateStrategy);
+      }
+      const message = error?.message || "Failed to save proxy config";
+      setSaveError(message);
+      console.error("[NoAuthProxyCard] Save proxy config failed:", error);
     } finally {
       setSaving(false);
     }
   }, [providerId]);
 
   const handleStrategyChange = (newStrategy) => {
+    const previousState = { proxyPoolId, rotateStrategy };
     setRotateStrategy(newStrategy);
-    save(proxyPoolId, newStrategy);
+    save(proxyPoolId, newStrategy, previousState);
   };
 
   const isRotation = rotateStrategy !== "none";
@@ -89,9 +134,10 @@ export default function NoAuthProxyCard({ providerId }) {
   const handlePoolChangeSafe = (newPoolId) => {
     const nextPool = proxyPools.find((pool) => pool.id === newPoolId);
     const nextStrategy = nextPool?.type === "mihomo" ? "none" : rotateStrategy;
+    const previousState = { proxyPoolId, rotateStrategy };
     setProxyPoolId(newPoolId);
     setRotateStrategy(nextStrategy);
-    save(newPoolId, nextStrategy);
+    save(newPoolId, nextStrategy, previousState);
   };
 
   return (
@@ -106,6 +152,12 @@ export default function NoAuthProxyCard({ providerId }) {
         </div>
         {savedFlash && <Badge variant="success" size="sm">Saved</Badge>}
       </div>
+
+      {saveError && (
+        <p role="alert" className="mb-3 text-xs text-red-600 dark:text-red-400">
+          {saveError}
+        </p>
+      )}
 
       <Select
         label="Proxy Pool"
