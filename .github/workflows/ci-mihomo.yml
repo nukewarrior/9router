@@ -16,6 +16,7 @@ concurrency:
 
 env:
   NODE_VERSION: "22"
+  VITEST_VERSION: "4.1.10"
 
 jobs:
   mihomo-tests:
@@ -42,8 +43,8 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Bootstrap Vitest
-        run: npm install --no-save --no-audit --no-fund vitest
+      - name: Install pinned Vitest
+        run: npm install --no-save --no-audit --no-fund "vitest@${VITEST_VERSION}"
 
       - name: Print environment versions
         run: |
