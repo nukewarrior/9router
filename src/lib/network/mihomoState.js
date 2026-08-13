@@ -528,10 +528,11 @@ export async function recordMihomoRouteFailure({
     const cooldownMs = getCooldownMs(config, previous, resetsAtMs, nowMs);
     const lastErrorType = classifyRateLimitError(status, error);
     assignMihomoFailureState(previous, { status, error, lastErrorType, nowMs, cooldownMs });
-    if (scope.kind === "node") {
-      const { nodeState } = getMutableNodeState(current, route);
-      if (nodeState.egress && typeof nodeState.egress === "object") nodeState.egress.needsProbe = true;
-    }
+    // The cached mapping may have drifted before the rate limit arrived. This
+    // marker is required even when the cooldown itself is egress-scoped so a
+    // later request can refresh the node before trusting that identity again.
+    const { nodeState } = getMutableNodeState(current, route);
+    if (nodeState.egress && typeof nodeState.egress === "object") nodeState.egress.needsProbe = true;
     outcome = { updated: true, cooldownMs, lastErrorType, scope: scope.kind, identityKey: scope.identityKey };
     return current;
   });
