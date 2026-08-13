@@ -335,10 +335,11 @@ export async function clearMihomoRouteCooldown({
     Object.assign(state, {
       cooldownUntil: null,
       backoffLevel: 0,
+      lastStatus: null,
       lastErrorType: null,
       lastError: null,
       lastErrorAt: null,
-      lastSuccessAt: state.lastSuccessAt || new Date(nowMs).toISOString(),
+      lastSuccessAt: state.lastSuccessAt || null,
     });
     updated = true;
     return current;

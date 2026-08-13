@@ -18,12 +18,56 @@ function formatDateTime(value) {
 }
 
 function normalizeFormData(data = {}) {
+  const mihomo = data.mihomo && typeof data.mihomo === "object" ? data.mihomo : {};
+  const cooldown = mihomo.cooldown && typeof mihomo.cooldown === "object" ? mihomo.cooldown : {};
   return {
     name: data.name || "",
     proxyUrl: data.proxyUrl || "",
     noProxy: data.noProxy || "",
     isActive: data.isActive !== false,
-    strictProxy: data.strictProxy === true,
+    strictProxy: data.type === "mihomo" || data.strictProxy === true,
+    type: data.type || "http",
+    mihomo: {
+      controllerUrl: mihomo.controllerUrl || "",
+      controllerSecret: "",
+      controllerSecretConfigured: mihomo.controllerSecretConfigured === true,
+      selectorName: mihomo.selectorName || "",
+      providerNamesText: Array.isArray(mihomo.providerNames) ? mihomo.providerNames.join(", ") : "",
+      includeRegex: mihomo.includeRegex || "",
+      excludeRegex: mihomo.excludeRegex || "",
+      maxAttemptsPerRequest: String(mihomo.maxAttemptsPerRequest || 6),
+      controllerTimeoutMs: String(mihomo.controllerTimeoutMs || 3000),
+      syncTtlMs: String(mihomo.syncTtlMs || 30000),
+      cooldownBaseMs: String(cooldown.baseMs || 300000),
+      cooldownMultiplier: String(cooldown.multiplier || 3),
+      cooldownMaxMs: String(cooldown.maxMs || 1800000),
+      regionOrderText: Array.isArray(mihomo.regionOrder) ? mihomo.regionOrder.join(", ") : "TW, JP, US, SG, HK, OTHER",
+    },
+  };
+}
+
+function splitList(value) {
+  return [...new Set(String(value || "").split(",").map((item) => item.trim()).filter(Boolean))];
+}
+
+function toMihomoPayload(formData) {
+  const mihomo = formData.mihomo || {};
+  return {
+    controllerUrl: mihomo.controllerUrl.trim(),
+    ...(mihomo.controllerSecret.trim() ? { controllerSecret: mihomo.controllerSecret.trim() } : {}),
+    selectorName: mihomo.selectorName.trim(),
+    providerNames: splitList(mihomo.providerNamesText),
+    includeRegex: mihomo.includeRegex.trim(),
+    excludeRegex: mihomo.excludeRegex.trim(),
+    maxAttemptsPerRequest: Number(mihomo.maxAttemptsPerRequest),
+    controllerTimeoutMs: Number(mihomo.controllerTimeoutMs),
+    syncTtlMs: Number(mihomo.syncTtlMs),
+    cooldown: {
+      baseMs: Number(mihomo.cooldownBaseMs),
+      multiplier: Number(mihomo.cooldownMultiplier),
+      maxMs: Number(mihomo.cooldownMaxMs),
+    },
+    regionOrder: splitList(mihomo.regionOrderText),
   };
 }
 
@@ -46,6 +90,9 @@ export default function ProxyPoolsPage() {
   const [importing, setImporting] = useState(false);
   const [deploying, setDeploying] = useState(false);
   const [testingId, setTestingId] = useState(null);
+  const [mihomoTestBusy, setMihomoTestBusy] = useState(false);
+  const [mihomoNodes, setMihomoNodes] = useState([]);
+  const [mihomoNodesLoading, setMihomoNodesLoading] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
   const [healthChecking, setHealthChecking] = useState(false);
   const [healthProgress, setHealthProgress] = useState({ current: 0, total: 0 });
@@ -81,12 +128,15 @@ export default function ProxyPoolsPage() {
   }, []);
 
   useEffect(() => {
+    // This effect intentionally synchronizes the initial server snapshot into local UI state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchProxyPools();
   }, [fetchProxyPools]);
 
   const resetForm = () => {
     setEditingProxyPool(null);
     setFormData(normalizeFormData());
+    setMihomoNodes([]);
   };
 
   const openCreateModal = () => {
@@ -97,6 +147,7 @@ export default function ProxyPoolsPage() {
   const openEditModal = (proxyPool) => {
     setEditingProxyPool(proxyPool);
     setFormData(normalizeFormData(proxyPool));
+    setMihomoNodes([]);
     setShowFormModal(true);
   };
 
@@ -111,8 +162,11 @@ export default function ProxyPoolsPage() {
       proxyUrl: formData.proxyUrl.trim(),
       noProxy: formData.noProxy.trim(),
       isActive: formData.isActive === true,
-      strictProxy: formData.strictProxy === true,
+      type: formData.type,
+      strictProxy: formData.type === "mihomo" || formData.strictProxy === true,
     };
+
+    if (formData.type === "mihomo") payload.mihomo = toMihomoPayload(formData);
 
     if (!payload.name || !payload.proxyUrl) return;
 
@@ -137,6 +191,87 @@ export default function ProxyPoolsPage() {
       console.log("Error saving proxy pool:", error);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleMihomoTest = async () => {
+    const payload = {
+      proxyUrl: formData.proxyUrl.trim(),
+      mihomo: toMihomoPayload(formData),
+    };
+    if (!payload.proxyUrl || !payload.mihomo.controllerUrl || !payload.mihomo.selectorName) {
+      notify.warning("Proxy listener URL, Controller URL and Selector are required.");
+      return;
+    }
+    setMihomoTestBusy(true);
+    try {
+      const endpoint = editingProxyPool
+        ? `/api/proxy-pools/${editingProxyPool.id}/mihomo/test`
+        : "/api/proxy-pools/mihomo/test";
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        notify.error(data.error || "Mihomo test failed");
+        return;
+      }
+      setMihomoNodes(data.nodes || []);
+      notify.success(`Mihomo ready: ${data.nodes?.length || 0} leaf nodes found`);
+    } catch (error) {
+      console.log("Error testing Mihomo pool:", error);
+      notify.error("Mihomo test failed");
+    } finally {
+      setMihomoTestBusy(false);
+    }
+  };
+
+  const handleLoadMihomoNodes = async () => {
+    if (!editingProxyPool) {
+      await handleMihomoTest();
+      return;
+    }
+    setMihomoNodesLoading(true);
+    try {
+      const res = await fetch(`/api/proxy-pools/${editingProxyPool.id}/mihomo/nodes?businessProvider=opencode`, { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok) {
+        notify.error(data.error || "Failed to load Mihomo nodes");
+        return;
+      }
+      setMihomoNodes(data.nodes || []);
+    } catch (error) {
+      console.log("Error loading Mihomo nodes:", error);
+      notify.error("Failed to load Mihomo nodes");
+    } finally {
+      setMihomoNodesLoading(false);
+    }
+  };
+
+  const handleClearMihomoCooldown = async (node) => {
+    if (!editingProxyPool) return;
+    try {
+      const res = await fetch(`/api/proxy-pools/${editingProxyPool.id}/mihomo/clear-cooldown`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          proxyProvider: node.proxyProvider,
+          nodeName: node.nodeName || node.name,
+          businessProvider: "opencode",
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        notify.error(data.error || "Failed to clear cooldown");
+        return;
+      }
+      notify.success("Node cooldown cleared");
+      await handleLoadMihomoNodes();
+    } catch (error) {
+      console.log("Error clearing Mihomo cooldown:", error);
+      notify.error("Failed to clear cooldown");
     }
   };
 
@@ -169,9 +304,13 @@ export default function ProxyPoolsPage() {
   };
 
   const handleTest = async (proxyPoolId) => {
+    const pool = proxyPools.find((item) => item.id === proxyPoolId);
     setTestingId(proxyPoolId);
     try {
-      const res = await fetch(`/api/proxy-pools/${proxyPoolId}/test`, { method: "POST" });
+      const endpoint = pool?.type === "mihomo"
+        ? `/api/proxy-pools/${proxyPoolId}/mihomo/test`
+        : `/api/proxy-pools/${proxyPoolId}/test`;
+      const res = await fetch(endpoint, { method: "POST" });
       const data = await res.json();
 
       if (!res.ok) {
@@ -329,6 +468,8 @@ export default function ProxyPoolsPage() {
 
   // Cleanup selectedIds when pools change
   useEffect(() => {
+    // Keep selections valid after a refresh or deletion.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSelectedIds((prev) => prev.filter((id) => proxyPools.some((p) => p.id === id)));
   }, [proxyPools]);
 
@@ -722,11 +863,19 @@ export default function ProxyPoolsPage() {
                     {pool.type === "cloudflare" && (
                       <Badge variant="default" size="sm">cloudflare relay</Badge>
                     )}
+                    {pool.type === "mihomo" && (
+                      <Badge variant="default" size="sm">Mihomo managed</Badge>
+                    )}
                     <Badge variant="default" size="sm">
                       {pool.boundConnectionCount || 0} bound
                     </Badge>
                   </div>
                   <p className="text-xs text-text-muted truncate mt-1">{pool.proxyUrl}</p>
+                  {pool.type === "mihomo" && pool.mihomo?.selectorName ? (
+                    <p className="text-xs text-text-muted truncate mt-1">
+                      Selector: {pool.mihomo.selectorName} · max {pool.mihomo.maxAttemptsPerRequest || 6} attempts
+                    </p>
+                  ) : null}
                   {pool.noProxy ? (
                     <p className="text-xs text-text-muted truncate">No proxy: {pool.noProxy}</p>
                   ) : null}
@@ -895,7 +1044,7 @@ export default function ProxyPoolsPage() {
             value={cloudflareForm.apiToken}
             onChange={(e) => setCloudflareForm((prev) => ({ ...prev, apiToken: e.target.value }))}
             placeholder="your-cloudflare-api-token"
-            hint={<>Requires "Workers Scripts: Edit" permission. <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Get token →</a></>}
+            hint={<>Requires &quot;Workers Scripts: Edit&quot; permission. <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Get token →</a></>}
             type="password"
           />
           <Input
@@ -1010,6 +1159,154 @@ export default function ProxyPoolsPage() {
             hint="Comma-separated hosts/domains to bypass proxy"
           />
 
+          <div className="flex flex-col gap-2">
+            <label className="text-sm font-medium text-text-main" htmlFor="proxy-pool-type">Pool Type</label>
+            <select
+              id="proxy-pool-type"
+              value={formData.type}
+              onChange={(e) => setFormData((prev) => ({
+                ...prev,
+                type: e.target.value,
+                strictProxy: e.target.value === "mihomo" || prev.strictProxy,
+              }))}
+              disabled={saving}
+              className="py-2 px-3 text-sm text-text-main bg-white dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-md focus:ring-1 focus:ring-primary/30 focus:border-primary/50 focus:outline-none transition-all disabled:opacity-50"
+            >
+              <option value="http">HTTP / HTTPS proxy</option>
+              <option value="mihomo">Mihomo / Clash Controller</option>
+              <option value="vercel">Vercel relay</option>
+              <option value="cloudflare">Cloudflare relay</option>
+              <option value="deno">Deno relay</option>
+            </select>
+          </div>
+
+          {formData.type === "mihomo" && (
+            <div className="flex flex-col gap-4 rounded-xl border border-primary/20 bg-primary/5 p-3">
+              <div>
+                <p className="text-sm font-medium text-text-main">Managed by Mihomo node routing</p>
+                <p className="text-xs text-text-muted mt-1">
+                  9Router selects one leaf node through the Controller for each request. This pool cannot participate in outer rotation.
+                </p>
+              </div>
+              <Input
+                label="Controller URL"
+                value={formData.mihomo.controllerUrl}
+                onChange={(e) => setFormData((prev) => ({ ...prev, mihomo: { ...prev.mihomo, controllerUrl: e.target.value } }))}
+                placeholder="http://10.11.11.1:9090"
+              />
+              <Input
+                label="Controller Secret"
+                type="password"
+                value={formData.mihomo.controllerSecret}
+                onChange={(e) => setFormData((prev) => ({ ...prev, mihomo: { ...prev.mihomo, controllerSecret: e.target.value } }))}
+                placeholder={formData.mihomo.controllerSecretConfigured ? "Leave empty to keep current secret" : "Optional Bearer secret"}
+                hint={formData.mihomo.controllerSecretConfigured ? "A secret is already configured; an empty value preserves it." : "Sent only to the Mihomo Controller and never returned by the API."}
+              />
+              <Input
+                label="Selector"
+                value={formData.mihomo.selectorName}
+                onChange={(e) => setFormData((prev) => ({ ...prev, mihomo: { ...prev.mihomo, selectorName: e.target.value } }))}
+                placeholder="🤖 OpenCode调度"
+              />
+              <Input
+                label="Proxy Provider(s)"
+                value={formData.mihomo.providerNamesText}
+                onChange={(e) => setFormData((prev) => ({ ...prev, mihomo: { ...prev.mihomo, providerNamesText: e.target.value } }))}
+                placeholder="订阅一, 订阅二"
+                hint="Comma-separated. Leave empty to use the Selector's members without provider intersection."
+              />
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <Input
+                  label="Include Regex"
+                  value={formData.mihomo.includeRegex}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, mihomo: { ...prev.mihomo, includeRegex: e.target.value } }))}
+                  placeholder="(?i)台湾|日本|美国"
+                />
+                <Input
+                  label="Exclude Regex"
+                  value={formData.mihomo.excludeRegex}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, mihomo: { ...prev.mihomo, excludeRegex: e.target.value } }))}
+                  placeholder="流媒体|实验"
+                />
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <Input
+                  label="Max Attempts"
+                  type="number"
+                  min="1"
+                  max="50"
+                  value={formData.mihomo.maxAttemptsPerRequest}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, mihomo: { ...prev.mihomo, maxAttemptsPerRequest: e.target.value } }))}
+                />
+                <Input
+                  label="Cooldown Base (ms)"
+                  type="number"
+                  value={formData.mihomo.cooldownBaseMs}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, mihomo: { ...prev.mihomo, cooldownBaseMs: e.target.value } }))}
+                />
+                <Input
+                  label="Cooldown Max (ms)"
+                  type="number"
+                  value={formData.mihomo.cooldownMaxMs}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, mihomo: { ...prev.mihomo, cooldownMaxMs: e.target.value } }))}
+                />
+              </div>
+              <Input
+                label="Region Order"
+                value={formData.mihomo.regionOrderText}
+                onChange={(e) => setFormData((prev) => ({ ...prev, mihomo: { ...prev.mihomo, regionOrderText: e.target.value } }))}
+                placeholder="TW, JP, US, SG, HK, OTHER"
+              />
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="secondary" icon="science" onClick={handleMihomoTest} disabled={saving || mihomoTestBusy}>
+                  {mihomoTestBusy ? "Testing..." : "Test"}
+                </Button>
+                <Button size="sm" variant="ghost" icon="refresh" onClick={handleLoadMihomoNodes} disabled={saving || mihomoNodesLoading || mihomoTestBusy}>
+                  {mihomoNodesLoading ? "Loading..." : "Load nodes"}
+                </Button>
+              </div>
+              {mihomoNodes.length > 0 && (
+                <div className="overflow-x-auto rounded-lg border border-black/10 dark:border-white/10 bg-white/60 dark:bg-black/10">
+                  <table className="w-full text-xs">
+                    <thead className="border-b border-black/10 dark:border-white/10 text-left text-text-muted">
+                      <tr>
+                        <th className="px-3 py-2 font-medium">Node</th>
+                        <th className="px-3 py-2 font-medium">Provider</th>
+                        <th className="px-3 py-2 font-medium">Region</th>
+                        <th className="px-3 py-2 font-medium">State</th>
+                        <th className="px-3 py-2" />
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-black/5 dark:divide-white/5">
+                      {mihomoNodes.map((node) => {
+                        const state = node.providerState?.opencode || {};
+                        return (
+                          <tr key={`${node.proxyProvider}\0${node.nodeName || node.name}`}>
+                            <td className="max-w-[12rem] truncate px-3 py-2 text-text-main">{node.nodeName || node.name}</td>
+                            <td className="px-3 py-2 text-text-muted">{node.proxyProvider}</td>
+                            <td className="px-3 py-2 text-text-muted">{node.region}</td>
+                            <td className="px-3 py-2">
+                              <Badge size="sm" variant={state.status === "healthy" ? "success" : state.status === "cooldown" ? "warning" : "default"}>
+                                {state.status || "unknown"}
+                              </Badge>
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              {state.cooldownUntil && editingProxyPool && (
+                                <button className="text-primary hover:underline" onClick={() => handleClearMihomoCooldown(node)}>
+                                  Clear
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="flex flex-col gap-3 rounded-lg border border-border/50 p-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <p className="font-medium text-sm">Active</p>
@@ -1028,9 +1325,9 @@ export default function ProxyPoolsPage() {
               <p className="text-xs text-text-muted">Fail request if proxy is unreachable instead of falling back to direct.</p>
             </div>
             <Toggle
-              checked={formData.strictProxy === true}
+              checked={formData.type === "mihomo" || formData.strictProxy === true}
               onChange={() => setFormData((prev) => ({ ...prev, strictProxy: !prev.strictProxy }))}
-              disabled={saving}
+              disabled={saving || formData.type === "mihomo"}
             />
           </div>
 

@@ -30,7 +30,19 @@ export default function NoAuthProxyCard({ providerId }) {
       setProxyPools(poolData.proxyPools || []);
       const override = (settingsData.providerStrategies || {})[providerId] || {};
       setProxyPoolId(override.proxyPoolId || NONE_PROXY_POOL_VALUE);
-      setRotateStrategy(override.rotateStrategy || "none");
+      const selectedPool = (poolData.proxyPools || []).find((pool) => pool.id === override.proxyPoolId);
+      setRotateStrategy(selectedPool?.type === "mihomo" ? "none" : (override.rotateStrategy || "none"));
+      if (selectedPool?.type === "mihomo" && override.rotateStrategy && override.rotateStrategy !== "none") {
+        const repaired = { ...override };
+        delete repaired.rotateStrategy;
+        fetch("/api/settings", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            providerStrategies: { ...(settingsData.providerStrategies || {}), [providerId]: repaired },
+          }),
+        }).catch(() => {});
+      }
     }).catch(() => {});
     return () => { cancelled = true; };
   }, [providerId]);
@@ -63,18 +75,24 @@ export default function NoAuthProxyCard({ providerId }) {
     }
   }, [providerId]);
 
-  const handlePoolChange = (newPoolId) => {
-    setProxyPoolId(newPoolId);
-    save(newPoolId, rotateStrategy);
-  };
-
   const handleStrategyChange = (newStrategy) => {
     setRotateStrategy(newStrategy);
     save(proxyPoolId, newStrategy);
   };
 
-  const canRotate = proxyPools.length >= 2;
   const isRotation = rotateStrategy !== "none";
+  const selectedPool = proxyPools.find((pool) => pool.id === proxyPoolId);
+  const isMihomoManaged = selectedPool?.type === "mihomo";
+  const rotatableProxyPools = proxyPools.filter((pool) => pool.type !== "mihomo");
+  const canRotate = rotatableProxyPools.length >= 2;
+
+  const handlePoolChangeSafe = (newPoolId) => {
+    const nextPool = proxyPools.find((pool) => pool.id === newPoolId);
+    const nextStrategy = nextPool?.type === "mihomo" ? "none" : rotateStrategy;
+    setProxyPoolId(newPoolId);
+    setRotateStrategy(nextStrategy);
+    save(newPoolId, nextStrategy);
+  };
 
   return (
     <Card>
@@ -92,13 +110,17 @@ export default function NoAuthProxyCard({ providerId }) {
       <Select
         label="Proxy Pool"
         value={proxyPoolId}
-        onChange={(e) => handlePoolChange(e.target.value)}
-        disabled={saving || isRotation}
+        onChange={(e) => handlePoolChangeSafe(e.target.value)}
+        disabled={saving || (isRotation && !isMihomoManaged)}
         options={[
           { value: NONE_PROXY_POOL_VALUE, label: "None (direct)" },
           ...proxyPools.map((pool) => ({ value: pool.id, label: pool.name })),
         ]}
-        hint={isRotation ? "Pool selector is ignored when rotation is active — all active pools are used." : undefined}
+        hint={isMihomoManaged
+          ? "Managed by Mihomo node routing. Outer pool rotation is disabled for this selection."
+          : isRotation
+            ? "Pool selector is ignored when rotation is active — all active non-Mihomo pools are used."
+            : undefined}
       />
 
       <div className="flex flex-col gap-2 mt-4">
@@ -106,7 +128,7 @@ export default function NoAuthProxyCard({ providerId }) {
         <select
           value={rotateStrategy}
           onChange={(e) => handleStrategyChange(e.target.value)}
-          disabled={saving}
+          disabled={saving || isMihomoManaged}
           className="py-2 px-3 text-sm text-text-main bg-white dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-md focus:ring-1 focus:ring-primary/30 focus:border-primary/50 focus:outline-none transition-all disabled:opacity-50"
         >
           {STRATEGIES.map((s) => (
@@ -116,12 +138,14 @@ export default function NoAuthProxyCard({ providerId }) {
           ))}
         </select>
         <p className="text-xs text-text-muted">
-          {!canRotate
+          {isMihomoManaged
+            ? "This pool manages its own Mihomo nodes and cannot participate in outer proxy pool rotation."
+            : !canRotate
             ? `Need at least 2 active proxy pools for rotation.`
             : isRotation
               ? rotateStrategy === "round-robin"
-                ? `Rotating through all ${proxyPools.length} active pools in order. State is in-memory (resets on restart).`
-                : `Picking a random pool from ${proxyPools.length} active pools each request.`
+                ? `Rotating through all ${rotatableProxyPools.length} active non-Mihomo pools in order. State is in-memory (resets on restart).`
+                : `Picking a random pool from ${rotatableProxyPools.length} active non-Mihomo pools each request.`
               : `Uses the selected pool above. Set to Round-robin or Random to rotate across all active pools.`}
         </p>
       </div>

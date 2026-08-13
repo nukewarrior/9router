@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
-import { getSettings, updateSettings } from "@/lib/localDb";
+import { getSettings, updateSettings, getProxyPoolById } from "@/lib/localDb";
 import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
 import { resetComboRotation } from "open-sse/services/combo.js";
 import bcrypt from "bcryptjs";
+import { isMihomoProxyPool } from "@/lib/network/proxyPoolTypes.js";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -13,6 +14,19 @@ const SETTINGS_RESPONSE_HEADERS = {
 
 // Secrets must never be mass-assigned from request body (CWE-915)
 const PROTECTED_SETTING_KEYS = ["password", "mitmSudoEncrypted"];
+
+async function validateProviderStrategies(providerStrategies) {
+  if (!providerStrategies || typeof providerStrategies !== "object" || Array.isArray(providerStrategies)) return;
+  for (const strategy of Object.values(providerStrategies)) {
+    if (!strategy || strategy.rotateStrategy === "none" || !strategy.proxyPoolId) continue;
+    const pool = await getProxyPoolById(strategy.proxyPoolId);
+    if (isMihomoProxyPool(pool)) {
+      const error = new Error("Mihomo managed proxy pools cannot be used with outer pool rotation. Set rotateStrategy to \"none\".");
+      error.status = 400;
+      throw error;
+    }
+  }
+}
 
 export async function GET() {
   try {
@@ -38,6 +52,8 @@ export async function GET() {
 export async function PATCH(request) {
   try {
     const body = await request.json();
+
+    await validateProviderStrategies(body.providerStrategies);
 
     // Strip protected secrets before any internal handling sets them
     for (const key of PROTECTED_SETTING_KEYS) delete body[key];

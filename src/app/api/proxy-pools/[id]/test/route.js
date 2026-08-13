@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { getProxyPoolById, updateProxyPool } from "@/models";
 import { testProxyUrl } from "@/lib/network/proxyTest";
-import { isRelayProxyPoolType } from "@/lib/network/proxyPoolTypes.js";
+import { isMihomoProxyPool, isRelayProxyPoolType } from "@/lib/network/proxyPoolTypes.js";
+import { testMihomoPool, mihomoAdminErrorResponse } from "@/lib/network/mihomoAdmin.js";
 import { fetch as undiciFetch } from "undici";
 
 async function testVercelRelay(relayUrl, timeoutMs = 10000) {
@@ -42,6 +43,24 @@ export async function POST(request, { params }) {
 
     if (!proxyPool) {
       return NextResponse.json({ error: "Proxy pool not found" }, { status: 404 });
+    }
+
+    if (isMihomoProxyPool(proxyPool)) {
+      try {
+        const result = await testMihomoPool({ pool: proxyPool });
+        const now = new Date().toISOString();
+        await updateProxyPool(id, { testStatus: "active", lastTestedAt: now, lastError: null, isActive: true });
+        return NextResponse.json({ ...result, testedAt: now });
+      } catch (error) {
+        const result = mihomoAdminErrorResponse(error);
+        await updateProxyPool(id, {
+          testStatus: "error",
+          lastTestedAt: new Date().toISOString(),
+          lastError: result.body.error,
+          isActive: false,
+        });
+        return NextResponse.json(result.body, { status: result.status });
+      }
     }
 
     const result = isRelayProxyPoolType(proxyPool)

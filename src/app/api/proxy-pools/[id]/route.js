@@ -62,6 +62,11 @@ function normalizeProxyPoolUpdate(body = {}, existing = {}) {
       controllerSecret,
     });
     updates.strictProxy = true;
+  } else if (updates.type && isMihomoProxyPool(existing.type)) {
+    // Do not leave a controller secret behind if a pool is converted back to
+    // an ordinary proxy type; the public DTO would otherwise expose it.
+    updates.mihomo = null;
+    updates.mihomoState = null;
   }
 
   return { updates };
