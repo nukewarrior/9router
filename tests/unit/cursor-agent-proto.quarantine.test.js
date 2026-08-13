@@ -1,3 +1,4 @@
+// Stable Unit quarantine: see tests/quarantine.json.
 import { describe, expect, it } from "vitest";
 import {
   decodeMessage,

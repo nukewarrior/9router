@@ -1,3 +1,4 @@
+// Stable Unit quarantine: see tests/quarantine.json.
 // Concurrency stress test — simulate many parallel saveRequestUsage / saveRequestDetail
 // to verify atomic counter, no data loss, no race conditions.
 import fs from "node:fs";

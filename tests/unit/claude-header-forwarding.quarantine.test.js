@@ -1,4 +1,5 @@
 /**
+ * Stable Unit quarantine: see tests/quarantine.json.
  * Unit tests for Anthropic header forwarding pipeline
  *
  * Tests cover:

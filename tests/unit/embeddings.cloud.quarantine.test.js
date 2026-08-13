@@ -1,4 +1,5 @@
 /**
+ * Stable Unit quarantine: see tests/quarantine.json.
  * Unit tests for cloud/src/handlers/embeddings.js
  *
  * Tests cover:

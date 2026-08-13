@@ -1,3 +1,4 @@
+// Stable Unit quarantine: see tests/quarantine.json.
 // A5 (cases #7/#9/#10): lock hardcode->config no-op values.
 import { describe, it, expect } from "vitest";
 import {

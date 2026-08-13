@@ -1,4 +1,5 @@
 /**
+ * Stable Unit quarantine: see tests/quarantine.json.
  * Codex executor: verify remote image URLs are fetched and inlined as
  * base64 data URIs BEFORE the request body reaches the upstream API.
  *
