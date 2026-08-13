@@ -133,7 +133,44 @@ export function getMihomoSelectorMutexSize() {
   return mihomoSelectorMutex.size;
 }
 
-export function buildMihomoRoute({ proxyPoolId, proxyProvider, nodeName, region, selectorName, attempt, attemptStartedAtMs = Date.now(), routeId, egressIdentityKey: identityKey = null, egressConfidence = "unknown" }) {
+function finiteOrNull(value) {
+  return Number.isFinite(Number(value)) ? Number(value) : null;
+}
+
+function buildMihomoEgressSnapshot({
+  egress = null,
+  identityKey = null,
+  confidence = "unknown",
+  observedAt = null,
+  expiresAt = null,
+  startedAtMs,
+  scopeEligible = false,
+} = {}) {
+  const snapshotIdentityKey = text(egress?.identityKey) || text(identityKey) || null;
+  return Object.freeze({
+    startedAtMs,
+    identityKey: snapshotIdentityKey,
+    confidence: text(egress?.confidence) || text(confidence) || "unknown",
+    observedAt: finiteOrNull(egress?.observedAt ?? observedAt),
+    expiresAt: finiteOrNull(egress?.expiresAt ?? expiresAt),
+    scopeEligible: scopeEligible === true && Boolean(snapshotIdentityKey),
+  });
+}
+
+export function buildMihomoRoute({
+  proxyPoolId,
+  proxyProvider,
+  nodeName,
+  region,
+  selectorName,
+  attempt,
+  attemptStartedAtMs = Date.now(),
+  routeId,
+  egressIdentityKey: identityKey = null,
+  egressConfidence = "unknown",
+  egressSnapshot = null,
+}) {
+  const startedAtMs = Number.isFinite(Number(attemptStartedAtMs)) ? Number(attemptStartedAtMs) : Date.now();
   return {
     proxyPoolId,
     proxyProvider: proxyProvider || null,
@@ -142,8 +179,15 @@ export function buildMihomoRoute({ proxyPoolId, proxyProvider, nodeName, region,
     selectorName,
     egressIdentityKey: identityKey || null,
     egressConfidence: egressConfidence || "unknown",
+    egressSnapshot: buildMihomoEgressSnapshot({
+      ...(egressSnapshot && typeof egressSnapshot === "object" ? egressSnapshot : {}),
+      identityKey: egressSnapshot?.identityKey || identityKey,
+      confidence: egressSnapshot?.confidence || egressConfidence,
+      startedAtMs,
+      scopeEligible: egressSnapshot?.scopeEligible === true,
+    }),
     attempt: Number.isFinite(attempt) ? attempt : 1,
-    attemptStartedAtMs: Number.isFinite(Number(attemptStartedAtMs)) ? Number(attemptStartedAtMs) : Date.now(),
+    attemptStartedAtMs: startedAtMs,
     routeId: routeId || `${proxyPoolId}:${nodeName}:${Date.now()}`,
   };
 }
@@ -391,6 +435,11 @@ export async function prepareMihomoRouteAttempt({
       attemptStartedAtMs: nowMs,
       egressIdentityKey: shadowCandidate.egressKey,
       egressConfidence: shadowCandidate.node.egress?.confidence,
+      egressSnapshot: buildMihomoEgressSnapshot({
+        egress: shadowCandidate.node.egress,
+        startedAtMs: nowMs,
+        scopeEligible: config.egressScopedCooldown === true && isMihomoStableEgress(shadowCandidate.node.egress, nowMs),
+      }),
     })
     : null;
   return {
@@ -404,6 +453,11 @@ export async function prepareMihomoRouteAttempt({
       attemptStartedAtMs: nowMs,
       egressIdentityKey: candidateEgressKey,
       egressConfidence: candidate.egress?.confidence,
+      egressSnapshot: buildMihomoEgressSnapshot({
+        egress: candidate.egress,
+        startedAtMs: nowMs,
+        scopeEligible: config.egressScopedCooldown === true && isMihomoStableEgress(candidate.egress, nowMs),
+      }),
     }),
     shadowRoute,
     directory,

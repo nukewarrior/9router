@@ -146,4 +146,89 @@ describe("Mihomo route candidate selection", () => {
     expect(result.shadowRoute).toMatchObject({ nodeName: "JP-A02", egressIdentityKey: "4:1.2.3.4" });
     expect(context.attemptedEgressKeys).toEqual(new Set());
   });
+
+  it("freezes the stable/fresh egress scope decision at attempt start", async () => {
+    const pool = makePool("pool-attempt-snapshot");
+    pool.mihomo.egressScopedCooldown = true;
+    pool.mihomoState.proxyProviders.subscription = {
+      nodes: {
+        "JP-A01": {
+          egress: {
+            ip: "1.2.3.5",
+            family: 4,
+            identityKey: "4:1.2.3.5",
+            confidence: "stable",
+            observedAt: 50,
+            expiresAt: 1000,
+          },
+        },
+      },
+    };
+    const context = { attemptedNodeKeys: new Set(), deprioritizedRegions: new Set(), attempts: 0 };
+    const result = await prepareMihomoRouteAttempt({
+      poolId: pool.id,
+      businessProviderId: "opencode",
+      routeContext: context,
+      getPool: async () => pool,
+      makeClient: () => clientFor([{ name: "JP-A01" }]),
+      nowMs: 100,
+    });
+
+    expect(result.route.egressSnapshot).toEqual({
+      startedAtMs: 100,
+      identityKey: "4:1.2.3.5",
+      confidence: "stable",
+      observedAt: 50,
+      expiresAt: 1000,
+      scopeEligible: true,
+    });
+    expect(Object.isFrozen(result.route.egressSnapshot)).toBe(true);
+
+    pool.mihomoState.proxyProviders.subscription.nodes["JP-A01"].egress = {
+      ip: "9.9.9.9",
+      family: 4,
+      identityKey: "4:9.9.9.9",
+      confidence: "stable",
+      observedAt: 101,
+      expiresAt: 2000,
+    };
+    expect(result.route.egressSnapshot.identityKey).toBe("4:1.2.3.5");
+    expect(result.route.egressSnapshot.scopeEligible).toBe(true);
+  });
+
+  it.each([
+    ["tentative", { confidence: "tentative", expiresAt: 1000 }, true],
+    ["stale", { confidence: "stable", expiresAt: 99 }, true],
+    ["feature-disabled", { confidence: "stable", expiresAt: 1000 }, false],
+  ])("does not make a %s mapping eligible for egress scope", async (_caseName, egress, egressScopedCooldown) => {
+    const pool = makePool(`pool-attempt-snapshot-${_caseName}`);
+    pool.mihomo.egressScopedCooldown = egressScopedCooldown;
+    pool.mihomoState.proxyProviders.subscription = {
+      nodes: {
+        "JP-A01": {
+          egress: {
+            ip: "1.2.3.5",
+            family: 4,
+            identityKey: "4:1.2.3.5",
+            observedAt: 50,
+            ...egress,
+          },
+        },
+      },
+    };
+    const result = await prepareMihomoRouteAttempt({
+      poolId: pool.id,
+      businessProviderId: "opencode",
+      routeContext: { attemptedNodeKeys: new Set(), deprioritizedRegions: new Set(), attempts: 0 },
+      getPool: async () => pool,
+      makeClient: () => clientFor([{ name: "JP-A01" }]),
+      nowMs: 100,
+    });
+
+    expect(result.route.egressSnapshot).toMatchObject({
+      identityKey: "4:1.2.3.5",
+      confidence: egress.confidence,
+      scopeEligible: false,
+    });
+  });
 });
