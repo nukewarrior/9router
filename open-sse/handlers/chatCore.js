@@ -299,6 +299,14 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     vercelRelayUrl: credentials?.providerSpecificData?.vercelRelayUrl || "",
     ...(proxyOptionsOverride || {}),
   };
+  if (proxyOptions.mihomoManaged === true) {
+    // A managed Mihomo route is always fail-closed and must establish a new
+    // listener connection after each Selector handoff.
+    proxyOptions.connectionProxyEnabled = true;
+    proxyOptions.connectionNoProxy = "";
+    proxyOptions.strictProxy = true;
+    proxyOptions.ephemeralProxyDispatcher = true;
+  }
 
   if (proxyOptions.vercelRelayUrl) {
     const connectionName = credentials?.connectionName || credentials?.connectionId || "unknown";
