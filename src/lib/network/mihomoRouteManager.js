@@ -167,6 +167,8 @@ function chooseCandidate(nodes, config, routeContext, poolId, businessProviderId
   }
   const regions = [...grouped.keys()].sort((a, b) => (order.get(a) ?? Number.MAX_SAFE_INTEGER) - (order.get(b) ?? Number.MAX_SAFE_INTEGER) || a.localeCompare(b));
   const rotation = getRotationState(poolId, businessProviderId);
+  // regionOrder is a priority list: a fresh request stays in the first
+  // eligible region. The process-local cursor only balances nodes within it.
   const region = regions[0];
   const regionNodes = grouped.get(region).sort((a, b) => a.key.localeCompare(b.key));
   const cursor = rotation.nodeCursorByRegion.get(region) || 0;

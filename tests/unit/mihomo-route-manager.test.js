@@ -101,4 +101,24 @@ describe("Mihomo route candidate selection", () => {
     const second = await prepareMihomoRouteAttempt({ ...options, routeContext: secondContext, nowMs: 200 });
     expect(second.route.nodeName).not.toBe(first.route.nodeName);
   });
+
+  it("keeps regionOrder as priority across fresh requests", async () => {
+    const pool = makePool("pool-region-priority");
+    const nodes = [{ name: "TW-A01" }, { name: "TW-A02" }, { name: "JP-A01" }];
+    const options = {
+      poolId: pool.id,
+      businessProviderId: "opencode",
+      getPool: async () => pool,
+      makeClient: () => clientFor(nodes),
+    };
+    const firstContext = { attemptedNodeKeys: new Set(), deprioritizedRegions: new Set(), attempts: 0 };
+    const secondContext = { attemptedNodeKeys: new Set(), deprioritizedRegions: new Set(), attempts: 0 };
+
+    const first = await prepareMihomoRouteAttempt({ ...options, routeContext: firstContext, nowMs: 100 });
+    const second = await prepareMihomoRouteAttempt({ ...options, routeContext: secondContext, nowMs: 200 });
+
+    expect(first.route.region).toBe("TW");
+    expect(second.route.region).toBe("TW");
+    expect(second.route.nodeName).not.toBe(first.route.nodeName);
+  });
 });

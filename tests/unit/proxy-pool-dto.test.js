@@ -6,6 +6,7 @@ describe("proxy pool public DTO", () => {
     const dto = toPublicProxyPool({
       id: "p1",
       type: "mihomo",
+      controllerSecret: "legacy-secret",
       mihomo: {
         controllerUrl: "http://10.11.11.1:9090",
         controllerSecret: "secret",
