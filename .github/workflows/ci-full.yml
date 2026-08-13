@@ -51,17 +51,20 @@ jobs:
           npm --version
           npx vitest --version
 
-      - name: Run full unit tests
+      - name: Check test quarantine registry
+        run: node scripts/check-test-quarantine.mjs
+
+      - name: Run Stable Unit tests
         run: |
           set -o pipefail
-          npm run ci:test:unit 2>&1 | tee unit-tests.log
+          npm run ci:test:unit 2>&1 | tee stable-unit-tests.log
 
-      - name: Upload unit test log
+      - name: Upload Stable Unit test log
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: unit-tests-log
-          path: unit-tests.log
+          name: stable-unit-tests-log
+          path: stable-unit-tests.log
           if-no-files-found: ignore
           retention-days: 7
 
