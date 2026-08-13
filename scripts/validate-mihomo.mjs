@@ -33,7 +33,7 @@ function createValidationClient({ controllerUrl, secret, timeoutMs }) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await fetch(new URL(path.replace(/^\//, ""), `${baseUrl}/`), {
+      const response = await undiciFetch(new URL(path.replace(/^\//, ""), `${baseUrl}/`), {
         method: options.method || "GET",
         headers: {
           Accept: "application/json",

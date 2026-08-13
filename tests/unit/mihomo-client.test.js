@@ -1,12 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({
+  undiciFetch: vi.fn(),
+}));
+
+vi.mock("undici", () => ({
+  fetch: mocks.undiciFetch,
+}));
+
 import {
   createMihomoClient,
   MIHOMO_ERROR_CODES,
   MihomoClientError,
   validateMihomoControllerUrl,
 } from "../../src/lib/network/mihomoClient.js";
-
-const fetchMock = vi.fn();
 
 function jsonResponse(value, status = 200) {
   return new Response(JSON.stringify(value), {
@@ -43,8 +50,10 @@ describe("Mihomo Controller client", () => {
   const originalFetch = globalThis.fetch;
 
   beforeEach(() => {
-    fetchMock.mockReset();
-    globalThis.fetch = fetchMock;
+    mocks.undiciFetch.mockReset();
+    globalThis.fetch = vi.fn(() => {
+      throw new Error("global fetch must not be used by Mihomo Controller client");
+    });
   });
 
   afterEach(() => {
@@ -52,7 +61,7 @@ describe("Mihomo Controller client", () => {
   });
 
   it("uses Bearer auth, redirect error, timeout signal and encoded path segments", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ now: "JP-A01", type: "Selector" }));
+    mocks.undiciFetch.mockResolvedValueOnce(jsonResponse({ now: "JP-A01", type: "Selector" }));
     const client = createMihomoClient({
       controllerUrl: "http://10.11.11.1:9090",
       secret: "controller-secret",
@@ -61,7 +70,7 @@ describe("Mihomo Controller client", () => {
 
     await client.getProxy("🤖 OpenCode调度/primary");
 
-    const [url, options] = fetchMock.mock.calls[0];
+    const [url, options] = mocks.undiciFetch.mock.calls[0];
     expect(url).toBe("http://10.11.11.1:9090/proxies/%F0%9F%A4%96%20OpenCode%E8%B0%83%E5%BA%A6%2Fprimary");
     expect(options).toMatchObject({
       method: "GET",
@@ -75,38 +84,47 @@ describe("Mihomo Controller client", () => {
   });
 
   it("sends selector PUT without assuming success body", async () => {
-    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    mocks.undiciFetch.mockResolvedValueOnce(new Response(null, { status: 204 }));
     const client = createMihomoClient({ controllerUrl: "http://127.0.0.1:9090" });
 
     await expect(client.selectProxy("selector", "JP-A01")).resolves.toBeNull();
-    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+    expect(mocks.undiciFetch.mock.calls[0][1]).toMatchObject({
       method: "PUT",
       body: JSON.stringify({ name: "JP-A01" }),
       redirect: "error",
       headers: { Accept: "application/json", "Content-Type": "application/json" },
     });
-    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBeUndefined();
+    expect(mocks.undiciFetch.mock.calls[0][1].headers.Authorization).toBeUndefined();
   });
 
   it("maps controller auth and invalid JSON failures to stable error codes", async () => {
-    fetchMock.mockResolvedValueOnce(new Response("denied", { status: 401 }));
+    mocks.undiciFetch.mockResolvedValueOnce(new Response("denied", { status: 401 }));
     const client = createMihomoClient({ controllerUrl: "http://127.0.0.1:9090", secret: "secret" });
     await expect(client.getVersion()).rejects.toMatchObject({
       code: MIHOMO_ERROR_CODES.UNAUTHORIZED,
       status: 401,
     });
 
-    fetchMock.mockResolvedValueOnce(new Response("not-json", { status: 200 }));
+    mocks.undiciFetch.mockResolvedValueOnce(new Response("not-json", { status: 200 }));
     await expect(client.getVersion()).rejects.toMatchObject({ code: MIHOMO_ERROR_CODES.INVALID_RESPONSE });
   });
 
   it("maps fetch abort and network errors separately", async () => {
-    fetchMock.mockRejectedValueOnce(Object.assign(new Error("aborted"), { name: "AbortError" }));
+    mocks.undiciFetch.mockRejectedValueOnce(Object.assign(new Error("aborted"), { name: "AbortError" }));
     const client = createMihomoClient({ controllerUrl: "http://127.0.0.1:9090" });
     await expect(client.getVersion()).rejects.toMatchObject({ code: MIHOMO_ERROR_CODES.TIMEOUT });
 
-    fetchMock.mockRejectedValueOnce(new Error("ECONNREFUSED"));
+    mocks.undiciFetch.mockRejectedValueOnce(new Error("ECONNREFUSED"));
     await expect(client.getVersion()).rejects.toMatchObject({ code: MIHOMO_ERROR_CODES.UNREACHABLE });
+  });
+
+  it("bypasses a patched global fetch for every Controller request", async () => {
+    mocks.undiciFetch.mockResolvedValueOnce(jsonResponse({ version: "1.0.0" }));
+    const client = createMihomoClient({ controllerUrl: "http://127.0.0.1:9090" });
+
+    await expect(client.getVersion()).resolves.toEqual({ version: "1.0.0" });
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(mocks.undiciFetch).toHaveBeenCalledOnce();
   });
 
   it("does not expose the secret on the public client object", () => {

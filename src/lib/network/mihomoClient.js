@@ -1,4 +1,5 @@
 import { isIP } from "node:net";
+import { fetch as undiciFetch } from "undici";
 
 const DEFAULT_CONTROLLER_TIMEOUT_MS = 3000;
 const MAX_CONTROLLER_TIMEOUT_MS = 30000;
@@ -169,7 +170,7 @@ export function createMihomoClient({ controllerUrl, secret = "", timeoutMs } = {
 
     let response;
     try {
-      response = await globalThis.fetch(url, {
+      response = await undiciFetch(url, {
         method,
         headers,
         body: body === undefined ? undefined : JSON.stringify(body),
