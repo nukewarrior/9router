@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import { getProxyPoolById } from "@/models";
 import { MihomoAdminError, mihomoAdminErrorResponse } from "@/lib/network/mihomoAdmin.js";
-import { probeMihomoNodeEgress, probeMihomoNodesEgress } from "@/lib/network/mihomoEgressDiscovery.js";
+import {
+  probeMihomoNodeEgress,
+  probeMihomoNodesEgress,
+  toPublicMihomoEgressProbeResponse,
+} from "@/lib/network/mihomoEgressDiscovery.js";
 import { isMihomoProxyPool } from "@/lib/network/proxyPoolTypes.js";
 
 function text(value) {
@@ -37,7 +41,7 @@ export async function POST(request, { params }) {
         force: body?.force === true,
       });
 
-    return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json(toPublicMihomoEgressProbeResponse(result), { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     const result = mihomoAdminErrorResponse(error);
     return NextResponse.json(result.body, { status: result.status });

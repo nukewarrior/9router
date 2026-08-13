@@ -14,12 +14,123 @@ import {
 
 const MAX_OBSERVED_IPS = 5;
 
+const PUBLIC_EGRESS_FIELDS = [
+  "ip",
+  "family",
+  "identityKey",
+  "confidence",
+  "observedIps",
+  "sampleCount",
+  "successfulSamples",
+  "observedAt",
+  "expiresAt",
+  "lastProbeAt",
+  "lastProbeError",
+  "needsProbe",
+];
+
 function text(value) {
   return value === undefined || value === null ? "" : String(value).trim();
 }
 
 function formatError(error) {
   return text(error?.message || error) || "Egress probe failed";
+}
+
+function redactSensitiveText(value) {
+  return text(value)
+    .replace(/([a-z][a-z\d+.-]*:\/\/)[^\s/?#@]+@/giu, "$1")
+    .replace(/(authorization\s*:\s*bearer\s+)[^\s,;]+/giu, "$1[redacted]");
+}
+
+function pickPublicFields(value, fields) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return Object.fromEntries(fields
+    .filter((field) => Object.prototype.hasOwnProperty.call(value, field))
+    .map((field) => [field, value[field]]));
+}
+
+function publicEgress(egress) {
+  const picked = pickPublicFields(egress, PUBLIC_EGRESS_FIELDS);
+  if (!picked) return null;
+  if (Array.isArray(picked.observedIps)) picked.observedIps = picked.observedIps.map((ip) => redactSensitiveText(ip));
+  if (picked.lastProbeError) picked.lastProbeError = redactSensitiveText(picked.lastProbeError);
+  return picked;
+}
+
+function publicRoute(route) {
+  return pickPublicFields(route, [
+    "proxyPoolId",
+    "proxyProvider",
+    "nodeName",
+    "region",
+    "selectorName",
+    "egressIdentityKey",
+    "egressConfidence",
+    "attempt",
+    "attemptStartedAtMs",
+    "routeId",
+  ]);
+}
+
+function publicDirectory(directory) {
+  if (!directory || typeof directory !== "object") return null;
+  return {
+    selectorName: text(directory.selectorName) || null,
+    selectorNow: text(directory.selectorNow) || null,
+    warnings: Array.isArray(directory.warnings) ? directory.warnings.map(redactSensitiveText) : [],
+    nodes: Array.isArray(directory.nodes) ? directory.nodes.map((node) => ({
+      key: text(node?.key) || null,
+      nodeName: text(node?.nodeName) || null,
+      proxyProvider: text(node?.proxyProvider) || null,
+      region: text(node?.region) || "OTHER",
+      type: text(node?.type) || null,
+      alive: node?.alive === true ? true : node?.alive === false ? false : null,
+      delayMs: Number.isFinite(Number(node?.delayMs)) ? Number(node.delayMs) : null,
+      egress: publicEgress(node?.egress),
+    })) : [],
+  };
+}
+
+function publicProbeResult(result) {
+  return {
+    ok: result?.ok === true,
+    route: publicRoute(result?.route),
+    egress: publicEgress(result?.egress),
+    samples: Array.isArray(result?.samples)
+      ? result.samples.map((sample) => normalizeEgressIdentity(sample)?.ip || redactSensitiveText(sample)).filter(Boolean)
+      : [],
+    errors: Array.isArray(result?.errors) ? result.errors.map(redactSensitiveText) : [],
+  };
+}
+
+/**
+ * Serialize egress probe output for HTTP callers. Probe services retain the
+ * internal pool for persistence and follow-up work, but it must never cross
+ * the API boundary because it contains Mihomo credentials and runtime state.
+ */
+export function toPublicMihomoEgressProbeResponse(result) {
+  if (Array.isArray(result?.results)) {
+    return {
+      ok: result.ok === true,
+      region: text(result.region) || null,
+      requested: Math.max(0, Number(result.requested) || 0),
+      results: result.results.map(publicProbeResult),
+      directory: publicDirectory(result.directory),
+      summary: pickPublicFields(result.summary, [
+        "leafNodes",
+        "probedNodes",
+        "freshStableMappings",
+        "distinctExitIps",
+        "duplicateNodes",
+        "dynamicNodes",
+        "tentativeNodes",
+        "unknownNodes",
+        "staleNodes",
+      ]),
+    };
+  }
+  return publicProbeResult(result);
 }
 
 function parseIpv4(ip) {
