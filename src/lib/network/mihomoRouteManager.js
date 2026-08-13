@@ -134,7 +134,9 @@ export function getMihomoSelectorMutexSize() {
 }
 
 function finiteOrNull(value) {
-  return Number.isFinite(Number(value)) ? Number(value) : null;
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function buildMihomoEgressSnapshot({

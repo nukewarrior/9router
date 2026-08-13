@@ -179,6 +179,13 @@ describe("Mihomo egress-aware scheduling", () => {
     const result = await prepare(pool, nodes);
     expect(result.route).not.toBeNull();
     expect(result.route.egressIdentityKey).toMatch(/^node:/);
+    expect(result.route.egressSnapshot).toMatchObject({
+      identityKey: null,
+      confidence: "unknown",
+      observedAt: null,
+      expiresAt: null,
+      scopeEligible: false,
+    });
     expect(getMihomoEgressCandidateKey({ key: "sub-a\0TW-UNKNOWN", egress: null }, 1000)).toBe("node:sub-a\0TW-UNKNOWN");
   });
 });

@@ -30,6 +30,12 @@ function text(value) {
   return value === undefined || value === null ? "" : String(value).trim();
 }
 
+function finiteOrNull(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 function clone(value) {
   if (typeof structuredClone === "function") {
     try { return structuredClone(value); } catch { /* use JSON fallback */ }
@@ -401,9 +407,9 @@ function getMihomoAttemptEgressSnapshot(route) {
   return {
     identityKey: text(snapshot.identityKey) || null,
     confidence: text(snapshot.confidence) || "unknown",
-    observedAt: Number.isFinite(Number(snapshot.observedAt)) ? Number(snapshot.observedAt) : null,
-    expiresAt: Number.isFinite(Number(snapshot.expiresAt)) ? Number(snapshot.expiresAt) : null,
-    startedAtMs: Number.isFinite(Number(snapshot.startedAtMs)) ? Number(snapshot.startedAtMs) : null,
+    observedAt: finiteOrNull(snapshot.observedAt),
+    expiresAt: finiteOrNull(snapshot.expiresAt),
+    startedAtMs: finiteOrNull(snapshot.startedAtMs),
     scopeEligible: snapshot.scopeEligible === true,
   };
 }
