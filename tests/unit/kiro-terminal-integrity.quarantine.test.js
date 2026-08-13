@@ -1,3 +1,4 @@
+// Stable Unit quarantine: see tests/quarantine.json.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fetchMock = vi.fn();

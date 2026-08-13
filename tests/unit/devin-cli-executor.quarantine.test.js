@@ -1,3 +1,4 @@
+// Stable Unit quarantine: see tests/quarantine.json.
 import { describe, it, expect, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import os from "node:os";

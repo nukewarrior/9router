@@ -1,3 +1,4 @@
+// Stable Unit quarantine: see tests/quarantine.json.
 // Guards forceStream moved from chatCore hardcode → PROVIDERS schema (#5).
 import { beforeEach, describe, expect, it, vi } from "vitest";
 

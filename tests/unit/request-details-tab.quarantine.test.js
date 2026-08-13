@@ -1,3 +1,4 @@
+// Stable Unit quarantine: see tests/quarantine.json.
 // Backend logic behind /dashboard/usage?tab=details.
 // Covers crash-risk edge cases in getRequestDetails() used by
 // /api/usage/request-details and /api/usage/providers.

@@ -1,3 +1,4 @@
+// Stable Unit quarantine: see tests/quarantine.json.
 import { describe, it, expect } from "vitest";
 import { detectRequiredCapabilities, reorderByCapabilities } from "../../open-sse/services/combo.js";
 

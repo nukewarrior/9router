@@ -1,0 +1,72 @@
+{
+  "tests": {
+    "tests/unit/claude-header-forwarding.quarantine.test.js": {
+      "reason": "The Anthropic proxy routing assertion expects a legacy gotScraping call path that no longer matches the current implementation; the master baseline fails one deterministic case.",
+      "baseline": "2026-08-13"
+    },
+    "tests/unit/codex-image-fetch.quarantine.test.js": {
+      "reason": "The Codex image prefetch assertions target an older executor and upstream response contract; both image-fetch cases fail on the master baseline.",
+      "baseline": "2026-08-13"
+    },
+    "tests/unit/combo-autoswitch.quarantine.test.js": {
+      "reason": "The capability detection and ordering assertions no longer match the current combo model semantics; the master baseline fails two cases.",
+      "baseline": "2026-08-13"
+    },
+    "tests/unit/cursor-agent-proto.quarantine.test.js": {
+      "reason": "The suite expects Cursor AgentService codec and executor exports that are absent from the current implementation; all 35 cases fail during the master baseline.",
+      "baseline": "2026-08-13"
+    },
+    "tests/unit/cursor-models.quarantine.test.js": {
+      "reason": "The mocked Cursor model catalog cache expectation no longer matches the current resolver's fail-open behavior; one deterministic case fails on the master baseline.",
+      "baseline": "2026-08-13"
+    },
+    "tests/unit/db-concurrent.quarantine.test.js": {
+      "reason": "The database stress assertions require concurrency guarantees that the current persistence implementation does not provide consistently; three cases fail on the master baseline and require a dedicated DB task.",
+      "baseline": "2026-08-13"
+    },
+    "tests/unit/devin-cli-executor.quarantine.test.js": {
+      "reason": "The test requires XDG_CONFIG_HOME to be absent, which conflicts with the GitHub-hosted Linux runtime environment; one environment-dependent case fails on the master baseline.",
+      "baseline": "2026-08-13"
+    },
+    "tests/unit/executor-const-guard.quarantine.test.js": {
+      "reason": "The retry constant assertion still expects six Antigravity 429 attempts while the current runtime behavior is three; one stale contract case fails on the master baseline.",
+      "baseline": "2026-08-13"
+    },
+    "tests/unit/force-stream-config.quarantine.test.js": {
+      "reason": "The force-stream suite uses an incomplete headroom mock and retains assertions from an older provider configuration contract; two cases fail on the master baseline.",
+      "baseline": "2026-08-13"
+    },
+    "tests/unit/image-fetch-hardening.quarantine.test.js": {
+      "reason": "The public-host image success assertion no longer matches the current image fetch and hardening response contract; one case fails on the master baseline.",
+      "baseline": "2026-08-13"
+    },
+    "tests/unit/kiro-terminal-integrity.quarantine.test.js": {
+      "reason": "The retry-after-heartbeat assertions describe an older Kiro stream terminal behavior; two cases fail on the master baseline and need a dedicated Kiro task.",
+      "baseline": "2026-08-13"
+    },
+    "tests/unit/oauth-cursor-auto-import.quarantine.test.js": {
+      "reason": "The Cursor auto-import tests assert legacy filesystem paths and error messages that differ from the current implementation; all eight cases fail on the master baseline.",
+      "baseline": "2026-08-13"
+    },
+    "tests/unit/openai-to-claude.quarantine.test.js": {
+      "reason": "The Read-pages tool argument assertion expects an older OpenAI-to-Claude response shape; one legacy case fails on the master baseline.",
+      "baseline": "2026-08-13"
+    },
+    "tests/unit/request-details-tab.quarantine.test.js": {
+      "reason": "The request-details tests assert an older database truncation and provider-discovery contract; two cases fail on the master baseline.",
+      "baseline": "2026-08-13"
+    },
+    "tests/unit/translator-request-normalization.quarantine.test.js": {
+      "reason": "The suite expects text-only Claude content arrays to be flattened, while the current translator preserves the array shape; four known baseline cases fail.",
+      "baseline": "2026-08-13"
+    },
+    "tests/unit/windsurf-executor.quarantine.test.js": {
+      "reason": "The tests expect the retired self-serve Windsurf endpoint and registry entry while the current implementation uses the Codeium endpoint; three cases fail on the master baseline.",
+      "baseline": "2026-08-13"
+    },
+    "tests/unit/embeddings.cloud.quarantine.test.js": {
+      "reason": "The suite imports cloud/src/handlers/embeddings.js, but the current fork has no cloud production tree or deployment path; collection fails before any test can run.",
+      "baseline": "2026-08-13"
+    }
+  }
+}

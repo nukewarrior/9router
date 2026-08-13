@@ -1,5 +1,5 @@
 /**
- * Live repro for issue #1933: MiMo Code Free returns HTTP 502 "MiMo bootstrap failed: 403".
+ * Live-only repro for issue #1933: MiMo Code Free returns HTTP 502 "MiMo bootstrap failed: 403".
  * Root cause: upstream gates on Chrome-like User-Agent. Without UA → 403 "Illegal access".
  * Hits real endpoints — no mocks. Free provider, safe to call.
  */

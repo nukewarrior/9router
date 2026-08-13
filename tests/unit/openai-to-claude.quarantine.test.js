@@ -1,4 +1,5 @@
 /**
+ * Stable Unit quarantine: see tests/quarantine.json.
  * Unit tests for open-sse/translator/request/openai-to-claude.js
  *
  * Tests cover:

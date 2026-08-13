@@ -1,3 +1,4 @@
+// Stable Unit quarantine: see tests/quarantine.json.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as fsPromises from "fs/promises";
 

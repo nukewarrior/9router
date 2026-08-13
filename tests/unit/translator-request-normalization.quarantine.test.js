@@ -1,3 +1,4 @@
+// Stable Unit quarantine: see tests/quarantine.json.
 import { describe, it, expect } from "vitest";
 
 import { FORMATS } from "../../open-sse/translator/formats.js";
