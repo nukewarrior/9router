@@ -239,6 +239,7 @@ export async function executeMihomoNoAuthRoute({
 
   const routeContext = {
     attemptedNodeKeys: new Set(),
+    attemptedEgressKeys: new Set(),
     deprioritizedRegions: new Set(),
     attempts: 0,
   };

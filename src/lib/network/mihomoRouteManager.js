@@ -291,8 +291,14 @@ export async function prepareMihomoRouteAttempt({
     const expiry = cooldownExpiry(pool, node, businessProviderId);
     return !expiry || expiry <= nowMs;
   });
+  const availableEgressNodes = config.preferDistinctEgress
+    ? availableNodes.filter((node) => !routeContext.attemptedEgressKeys.has(getMihomoEgressCandidateKey(node, nowMs)))
+    : availableNodes;
+  const availableCandidateCount = config.preferDistinctEgress
+    ? new Set(availableEgressNodes.map((node) => getMihomoEgressCandidateKey(node, nowMs))).size
+    : availableNodes.length;
   if (routeContext.maxAttempts === undefined) {
-    routeContext.maxAttempts = Math.min(config.maxAttemptsPerRequest, availableNodes.length);
+    routeContext.maxAttempts = Math.min(config.maxAttemptsPerRequest, availableCandidateCount);
   }
 
   const effectiveMaxAttempts = routeContext.maxAttempts;
@@ -309,7 +315,7 @@ export async function prepareMihomoRouteAttempt({
     ? chooseEgressCandidate(availableNodes, config, routeContext, poolId, businessProviderId, nowMs, { shadow: true })
     : null;
   const selectedCandidate = config.preferDistinctEgress
-    ? chooseEgressCandidate(availableNodes.filter((node) => !routeContext.attemptedEgressKeys.has(getMihomoEgressCandidateKey(node, nowMs))), config, routeContext, poolId, businessProviderId, nowMs)
+    ? chooseEgressCandidate(availableEgressNodes, config, routeContext, poolId, businessProviderId, nowMs)
     : { node: chooseCandidate(availableNodes, config, routeContext, poolId, businessProviderId), egressKey: null };
   const candidate = selectedCandidate?.node;
   if (!candidate) {
