@@ -80,9 +80,17 @@ function namesFromMetadata(value) {
   return value.map((item) => typeof item === "string" ? item : item?.name).map((item) => String(item || "").trim()).filter(Boolean);
 }
 
+function proxyMapFromPayload(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return {};
+  if (payload.proxies && typeof payload.proxies === "object" && !Array.isArray(payload.proxies)) {
+    return payload.proxies;
+  }
+  return payload;
+}
+
 async function discoverValidationNodes({ client, selector, providerNames }) {
   const nestedTypes = new Set(["selector", "urltest", "fallback", "loadbalance", "load-balance", "direct", "reject", "dns", "pass"]);
-  const proxies = await client.getProxies();
+  const proxyMap = proxyMapFromPayload(await client.getProxies());
   const providerNameByNode = new Map();
   for (const providerName of providerNames) {
     const provider = await client.getProxyProvider(providerName);
@@ -93,7 +101,7 @@ async function discoverValidationNodes({ client, selector, providerNames }) {
 
   const nodes = [];
   for (const nodeName of namesFromMetadata(selector?.all)) {
-    const metadata = proxies?.[nodeName] || {};
+    const metadata = proxyMap[nodeName] || {};
     const type = String(metadata.type || "").trim().toLowerCase().replace(/\s+/g, "");
     if (nestedTypes.has(type) || metadata.alive === false) continue;
     if (providerNames.length > 0 && !providerNameByNode.has(nodeName)) continue;

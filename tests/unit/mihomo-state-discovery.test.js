@@ -29,28 +29,37 @@ describe("Mihomo node discovery", () => {
         all: ["TW-A30", "JP-A01", "auto", "dead"],
       },
       proxies: {
-        "TW-A30": { type: "VLESS", alive: true, history: [{ delay: 82 }] },
-        "JP-A01": { type: "HTTP", alive: true, delay: 110 },
-        auto: { type: "URLTest", alive: true },
-        dead: { type: "Shadowsocks", alive: false },
+        proxies: {
+          "TW-A30": { type: "VLESS", alive: true, history: [{ delay: 82 }] },
+          "JP-A01": { type: "Trojan", alive: true, history: [{ delay: 110 }] },
+          auto: { type: "URLTest", alive: true },
+          dead: { type: "Shadowsocks", alive: false },
+        },
       },
       providerNames: ["subscription"],
       providerDataByName: {
         subscription: { proxies: [{ name: "TW-A30" }, { name: "JP-A01" }, { name: "auto" }, { name: "not-in-selector" }] },
       },
       includeRegex: "(?i)TW|JP|auto",
-      excludeRegex: "A01$",
+      excludeRegex: "never-match",
     });
 
     expect(directory.selectorName).toBe("selector");
     expect(directory.selectorNow).toBe("TW-A30");
-    expect(directory.nodes).toHaveLength(1);
+    expect(directory.nodes).toHaveLength(2);
     expect(directory.nodes[0]).toMatchObject({
       key: "subscription\0TW-A30",
       nodeName: "TW-A30",
       proxyProvider: "subscription",
       region: "TW",
       delayMs: 82,
+      alive: true,
+    });
+    expect(directory.nodes[1]).toMatchObject({
+      nodeName: "JP-A01",
+      proxyProvider: "subscription",
+      region: "JP",
+      delayMs: 110,
       alive: true,
     });
     expect(directory.warnings).toContain('Excluded nested proxy group "auto": type=URLTest');
@@ -67,7 +76,7 @@ describe("Mihomo node discovery", () => {
   it("caches a directory by pool until its TTL expires", async () => {
     const client = {
       getProxy: vi.fn().mockResolvedValue({ type: "Selector", now: "A", all: ["A"] }),
-      getProxies: vi.fn().mockResolvedValue({ A: { type: "VLESS", alive: true } }),
+      getProxies: vi.fn().mockResolvedValue({ proxies: { A: { type: "VLESS", alive: true } } }),
       getProxyProvider: vi.fn(),
     };
 

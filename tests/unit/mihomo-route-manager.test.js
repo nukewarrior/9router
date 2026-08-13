@@ -27,8 +27,8 @@ function clientFor(nodes) {
   const proxies = Object.fromEntries(nodes.map((node) => [node.name, { type: "VLESS", alive: node.alive !== false }]));
   return {
     getProxy: async () => ({ type: "Selector", now: nodes[0]?.name || null, all: nodes.map((node) => node.name) }),
-    getProxies: async () => proxies,
-    getProxyProvider: async () => ({ proxies: nodes.map((node) => ({ name: node.name })) }),
+    getProxies: async () => ({ proxies }),
+    getProxyProvider: async () => ({ name: "subscription", type: "HTTP", proxies: nodes.map((node) => ({ name: node.name, type: "VLESS" })) }),
   };
 }
 

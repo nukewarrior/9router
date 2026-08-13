@@ -29,8 +29,10 @@ function fakeClient() {
   return {
     getVersion: async () => ({ version: "1.0.0" }),
     getProxy: async () => ({ type: "Selector", now: nodes[0], all: nodes }),
-    getProxies: async () => Object.fromEntries(nodes.map((name) => [name, { type: "VLESS", alive: true, delay: 82 }])),
-    getProxyProvider: async () => ({ proxies: nodes.map((name) => ({ name })) }),
+    getProxies: async () => ({
+      proxies: Object.fromEntries(nodes.map((name) => [name, { type: "VLESS", alive: true, history: [{ delay: 82 }] }])),
+    }),
+    getProxyProvider: async () => ({ name: "subscription", type: "HTTP", proxies: nodes.map((name) => ({ name, type: "VLESS" })) }),
   };
 }
 

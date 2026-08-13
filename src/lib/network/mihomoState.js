@@ -34,6 +34,18 @@ function metadataNames(value) {
   return value.map((item) => typeof item === "string" ? item : item?.name).map(text).filter(Boolean);
 }
 
+/**
+ * Normalize the Controller's GET /proxies envelope while keeping the flat
+ * object shape useful for small fakes and older callers.
+ */
+function normalizeProxyMap(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return {};
+  if (payload.proxies && typeof payload.proxies === "object" && !Array.isArray(payload.proxies)) {
+    return payload.proxies;
+  }
+  return payload;
+}
+
 function metadataDelayMs(metadata) {
   const direct = Number(metadata?.delayMs ?? metadata?.delay);
   if (Number.isFinite(direct) && direct >= 0) return direct;
@@ -112,7 +124,7 @@ function normalizeSelector(selector) {
 export function buildMihomoNodeDirectory({ selector, selectorName = null, proxies, providerDataByName = {}, providerNames = [], includeRegex = "", excludeRegex = "" } = {}) {
   const normalizedSelector = normalizeSelector(selector);
   const selectorNames = metadataNames(normalizedSelector.all);
-  const proxyMap = proxies && typeof proxies === "object" ? proxies : {};
+  const proxyMap = normalizeProxyMap(proxies);
   const providerNameByNode = buildProviderNameByNode(providerDataByName, providerNames);
   const include = compileFilter(includeRegex, "includeRegex");
   const exclude = compileFilter(excludeRegex, "excludeRegex");
