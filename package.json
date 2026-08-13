@@ -16,7 +16,9 @@
     "cli:pack": "npm --prefix cli run pack:cli",
     "cli:publish": "npm --prefix cli run publish:cli",
     "ci:test:mihomo": "vitest run --config tests/vitest.config.js tests/unit/mihomo-*.test.js tests/unit/chat-mihomo-fallback.test.js tests/unit/keyed-mutex.test.js tests/unit/proxy-ephemeral-dispatcher.test.js tests/unit/proxy-strict-mode.test.js tests/unit/proxy-pool-dto.test.js tests/unit/proxy-pool-types.test.js tests/unit/settings-mihomo-strategy.test.js tests/unit/error-classification.test.js tests/unit/base-executor-retry.test.js --maxWorkers=2",
-    "ci:test:unit": "vitest run --config tests/vitest.config.js tests/unit --maxWorkers=2"
+    "ci:test:unit": "vitest run --config tests/vitest.ci.config.js tests/unit --maxWorkers=2",
+    "ci:test:quarantine": "vitest run --config tests/vitest.config.js \"tests/**/*.quarantine.test.js\" --maxWorkers=2",
+    "ci:test:live": "vitest run --config tests/vitest.config.js tests/live --maxWorkers=2"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
