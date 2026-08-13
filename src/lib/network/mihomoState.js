@@ -18,6 +18,13 @@ const nodeDirectoryCache = new Map();
 
 export const SELECTOR_PROXY_PROVIDER = "__selector__";
 
+export const MIHOMO_EGRESS_CONFIDENCES = Object.freeze([
+  "stable",
+  "tentative",
+  "dynamic",
+  "unknown",
+]);
+
 function text(value) {
   return value === undefined || value === null ? "" : String(value).trim();
 }
@@ -121,7 +128,7 @@ function normalizeSelector(selector) {
  * proxy metadata. Mihomo remains the source of truth; this result is a TTL
  * cache only and is safe to discard on restart.
  */
-export function buildMihomoNodeDirectory({ selector, selectorName = null, proxies, providerDataByName = {}, providerNames = [], includeRegex = "", excludeRegex = "" } = {}) {
+export function buildMihomoNodeDirectory({ selector, selectorName = null, proxies, providerDataByName = {}, providerNames = [], includeRegex = "", excludeRegex = "", mihomoState = null } = {}) {
   const normalizedSelector = normalizeSelector(selector);
   const selectorNames = metadataNames(normalizedSelector.all);
   const proxyMap = normalizeProxyMap(proxies);
@@ -145,6 +152,7 @@ export function buildMihomoNodeDirectory({ selector, selectorName = null, proxie
     if (metadataAlive(metadata) === false) continue;
 
     const proxyProvider = providerNameByNode.get(nodeName) || SELECTOR_PROXY_PROVIDER;
+    const persistedEgress = mihomoState?.proxyProviders?.[proxyProvider]?.nodes?.[nodeName]?.egress;
     nodes.push({
       key: `${proxyProvider}\0${nodeName}`,
       nodeName,
@@ -154,6 +162,7 @@ export function buildMihomoNodeDirectory({ selector, selectorName = null, proxie
       alive: metadataAlive(metadata),
       delayMs: metadataDelayMs(metadata),
       history: Array.isArray(metadata.history) ? clone(metadata.history) : [],
+      egress: persistedEgress && typeof persistedEgress === "object" ? clone(persistedEgress) : null,
     });
   }
 
@@ -165,11 +174,25 @@ export function buildMihomoNodeDirectory({ selector, selectorName = null, proxie
   };
 }
 
-export async function discoverMihomoNodeDirectory({ poolId, client, selectorName, providerNames = [], includeRegex = "", excludeRegex = "", ttlMs = 30000, nowMs = Date.now() } = {}) {
+export async function discoverMihomoNodeDirectory({ poolId, client, selectorName, providerNames = [], includeRegex = "", excludeRegex = "", mihomoState = null, ttlMs = 30000, nowMs = Date.now() } = {}) {
   if (!poolId) throw new TypeError("poolId is required for Mihomo node discovery");
   if (!client) throw new TypeError("Mihomo client is required for node discovery");
   const cached = nodeDirectoryCache.get(poolId);
-  if (cached && cached.expiresAt > nowMs) return clone(cached.value);
+  if (cached && cached.expiresAt > nowMs) {
+    const cachedValue = clone(cached.value);
+    if (mihomoState) {
+      return {
+        ...cachedValue,
+        nodes: cachedValue.nodes.map((node) => ({
+          ...node,
+          egress: mihomoState?.proxyProviders?.[node.proxyProvider]?.nodes?.[node.nodeName]?.egress
+            ? clone(mihomoState.proxyProviders[node.proxyProvider].nodes[node.nodeName].egress)
+            : null,
+        })),
+      };
+    }
+    return cachedValue;
+  }
 
   const selector = await client.getProxy(selectorName);
   const proxies = await client.getProxies();
@@ -186,6 +209,7 @@ export async function discoverMihomoNodeDirectory({ poolId, client, selectorName
     providerNames,
     includeRegex,
     excludeRegex,
+    mihomoState,
   });
   nodeDirectoryCache.set(poolId, {
     value: clone(value),
@@ -216,11 +240,8 @@ function ensureObject(parent, key) {
   return parent[key];
 }
 
-export function getMihomoNodeBusinessState(pool, route, businessProviderId) {
-  const proxyProvider = stateKey(route?.proxyProvider || SELECTOR_PROXY_PROVIDER, "proxyProvider");
-  const nodeName = stateKey(route?.nodeName, "nodeName");
-  const businessProvider = stateKey(businessProviderId, "businessProvider");
-  return pool?.mihomoState?.proxyProviders?.[proxyProvider]?.nodes?.[nodeName]?.business?.[businessProvider] || {
+function emptyBusinessState() {
+  return {
     cooldownUntil: null,
     backoffLevel: 0,
     lastStatus: null,
@@ -229,6 +250,69 @@ export function getMihomoNodeBusinessState(pool, route, businessProviderId) {
     lastErrorAt: null,
     lastSuccessAt: null,
   };
+}
+
+function normalizeEgressRecord(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const confidence = MIHOMO_EGRESS_CONFIDENCES.includes(value.confidence) ? value.confidence : "unknown";
+  const observedIps = Array.isArray(value.observedIps)
+    ? [...new Set(value.observedIps.map(text).filter(Boolean))].slice(0, 5)
+    : [];
+  return {
+    ip: text(value.ip) || null,
+    family: Number(value.family) === 4 || Number(value.family) === 6 ? Number(value.family) : null,
+    identityKey: text(value.identityKey) || null,
+    confidence,
+    observedIps,
+    sampleCount: Math.max(0, Number(value.sampleCount) || 0),
+    successfulSamples: Math.max(0, Number(value.successfulSamples) || 0),
+    observedAt: Number.isFinite(Number(value.observedAt)) ? Number(value.observedAt) : null,
+    expiresAt: Number.isFinite(Number(value.expiresAt)) ? Number(value.expiresAt) : null,
+    lastProbeAt: Number.isFinite(Number(value.lastProbeAt)) ? Number(value.lastProbeAt) : null,
+    lastProbeError: text(value.lastProbeError) || null,
+  };
+}
+
+export function getMihomoNodeEgress(pool, route) {
+  const proxyProvider = stateKey(route?.proxyProvider || SELECTOR_PROXY_PROVIDER, "proxyProvider");
+  const nodeName = stateKey(route?.nodeName, "nodeName");
+  return normalizeEgressRecord(pool?.mihomoState?.proxyProviders?.[proxyProvider]?.nodes?.[nodeName]?.egress);
+}
+
+export function isMihomoEgressFresh(egress, nowMs = Date.now()) {
+  const expiresAt = Number(egress?.expiresAt);
+  return Number.isFinite(expiresAt) && expiresAt >= nowMs;
+}
+
+export function isMihomoStableEgress(egress, nowMs = Date.now()) {
+  return Boolean(
+    egress?.confidence === "stable"
+    && text(egress.identityKey)
+    && isMihomoEgressFresh(egress, nowMs),
+  );
+}
+
+export function getMihomoEgressBusinessState(pool, identityKey, businessProviderId) {
+  const identity = stateKey(identityKey, "identityKey");
+  const businessProvider = stateKey(businessProviderId, "businessProvider");
+  return pool?.mihomoState?.egressIdentities?.[identity]?.business?.[businessProvider] || emptyBusinessState();
+}
+
+export function attachMihomoNodeEgress(directory, pool) {
+  if (!directory || typeof directory !== "object") return directory;
+  return {
+    ...directory,
+    nodes: Array.isArray(directory.nodes)
+      ? directory.nodes.map((node) => ({ ...node, egress: getMihomoNodeEgress(pool, node) }))
+      : [],
+  };
+}
+
+export function getMihomoNodeBusinessState(pool, route, businessProviderId) {
+  const proxyProvider = stateKey(route?.proxyProvider || SELECTOR_PROXY_PROVIDER, "proxyProvider");
+  const nodeName = stateKey(route?.nodeName, "nodeName");
+  const businessProvider = stateKey(businessProviderId, "businessProvider");
+  return pool?.mihomoState?.proxyProviders?.[proxyProvider]?.nodes?.[nodeName]?.business?.[businessProvider] || emptyBusinessState();
 }
 
 function getCooldownMs(config, previousState, resetsAtMs, nowMs) {
@@ -243,23 +327,43 @@ function getCooldownMs(config, previousState, resetsAtMs, nowMs) {
 
 function normalizeStateContainer(pool) {
   if (!pool.mihomoState || typeof pool.mihomoState !== "object" || Array.isArray(pool.mihomoState)) {
-    pool.mihomoState = { proxyProviders: {} };
+    pool.mihomoState = { proxyProviders: {}, egressIdentities: {} };
   }
   if (!pool.mihomoState.proxyProviders || typeof pool.mihomoState.proxyProviders !== "object" || Array.isArray(pool.mihomoState.proxyProviders)) {
     pool.mihomoState.proxyProviders = {};
   }
+  if (!pool.mihomoState.egressIdentities || typeof pool.mihomoState.egressIdentities !== "object" || Array.isArray(pool.mihomoState.egressIdentities)) {
+    pool.mihomoState.egressIdentities = {};
+  }
   return pool.mihomoState.proxyProviders;
 }
 
-function getMutableBusinessState(pool, route, businessProviderId) {
+function getMutableNodeState(pool, route) {
   const proxyProvider = stateKey(route?.proxyProvider || SELECTOR_PROXY_PROVIDER, "proxyProvider");
   const nodeName = stateKey(route?.nodeName, "nodeName");
-  const businessProvider = stateKey(businessProviderId, "businessProvider");
   const providers = normalizeStateContainer(pool);
   const providerState = ensureObject(providers, proxyProvider);
   const nodes = ensureObject(providerState, "nodes");
-  const nodeState = ensureObject(nodes, nodeName);
+  return { proxyProvider, nodeName, nodeState: ensureObject(nodes, nodeName) };
+}
+
+function getMutableBusinessState(pool, route, businessProviderId) {
+  const businessProvider = stateKey(businessProviderId, "businessProvider");
+  const { nodeState } = getMutableNodeState(pool, route);
   const business = ensureObject(nodeState, "business");
+  const previous = business[businessProvider] && typeof business[businessProvider] === "object"
+    ? business[businessProvider]
+    : {};
+  business[businessProvider] = previous;
+  return previous;
+}
+
+function getMutableEgressBusinessState(pool, identityKey, businessProviderId) {
+  const identity = stateKey(identityKey, "identityKey");
+  const businessProvider = stateKey(businessProviderId, "businessProvider");
+  normalizeStateContainer(pool);
+  const identityState = ensureObject(pool.mihomoState.egressIdentities, identity);
+  const business = ensureObject(identityState, "business");
   const previous = business[businessProvider] && typeof business[businessProvider] === "object"
     ? business[businessProvider]
     : {};
@@ -270,6 +374,59 @@ function getMutableBusinessState(pool, route, businessProviderId) {
 function truncateError(errorText) {
   const normalized = typeof errorText === "string" ? errorText : String(errorText || "");
   return normalized.slice(0, 500);
+}
+
+export async function recordMihomoNodeEgress({
+  proxyPoolId,
+  route,
+  egress,
+  mutatePool = defaultMutateProxyPool,
+  nowMs = Date.now(),
+} = {}) {
+  let updated = false;
+  const pool = await mutatePool(proxyPoolId, (current) => {
+    if (!current?.mihomo || typeof current.mihomo !== "object") return current;
+    const { nodeState } = getMutableNodeState(current, route);
+    const next = normalizeEgressRecord(egress) || {
+      ip: null,
+      family: null,
+      identityKey: null,
+      confidence: "unknown",
+      observedIps: [],
+      sampleCount: 0,
+      successfulSamples: 0,
+      observedAt: null,
+      expiresAt: null,
+      lastProbeAt: nowMs,
+      lastProbeError: "No valid egress sample",
+    };
+    const previous = normalizeEgressRecord(nodeState.egress);
+    // A failed refresh should not erase a previously observed identity. The
+    // mapping naturally becomes stale through expiresAt and routing will then
+    // fall back to node semantics.
+    nodeState.egress = next.confidence === "unknown" && previous?.identityKey
+      ? { ...previous, lastProbeAt: next.lastProbeAt || nowMs, lastProbeError: next.lastProbeError }
+      : next;
+    updated = true;
+    return current;
+  });
+  return { updated, pool };
+}
+
+export async function clearMihomoNodeEgress({
+  proxyPoolId,
+  route,
+  mutatePool = defaultMutateProxyPool,
+} = {}) {
+  let updated = false;
+  const pool = await mutatePool(proxyPoolId, (current) => {
+    if (!current?.mihomo || typeof current.mihomo !== "object") return current;
+    const { nodeState } = getMutableNodeState(current, route);
+    delete nodeState.egress;
+    updated = true;
+    return current;
+  });
+  return { updated, pool };
 }
 
 export async function recordMihomoRouteFailure({

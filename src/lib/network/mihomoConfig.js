@@ -13,6 +13,12 @@ export const DEFAULT_MIHOMO_CONFIG = Object.freeze({
   syncTtlMs: 30000,
   maxAttemptsPerRequest: 6,
   regionOrder: DEFAULT_MIHOMO_REGION_ORDER,
+  egressProbeUrl: "https://api.ipify.org",
+  egressProbeTimeoutMs: 8000,
+  samplesPerNode: 2,
+  egressProbeTtlMs: 21600000,
+  preferDistinctEgress: false,
+  egressScopedCooldown: false,
   cooldown: {
     baseMs: 300000,
     multiplier: 3,
@@ -44,6 +50,23 @@ function stringList(value) {
 function regionList(value) {
   const regions = stringList(value);
   return regions.length > 0 ? regions : [...DEFAULT_MIHOMO_REGION_ORDER];
+}
+
+function normalizeEgressProbeUrl(value) {
+  const raw = text(value) || DEFAULT_MIHOMO_CONFIG.egressProbeUrl;
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new TypeError("egressProbeUrl must be a valid HTTPS URL");
+  }
+  if (parsed.protocol !== "https:") {
+    throw new TypeError("egressProbeUrl must use HTTPS");
+  }
+  if (parsed.username || parsed.password || parsed.hash) {
+    throw new TypeError("egressProbeUrl must not include credentials or a fragment");
+  }
+  return parsed.toString();
 }
 
 function validateRegex(value, fieldName) {
@@ -84,6 +107,12 @@ export function normalizeMihomoConfig(input = {}, { validateController = true } 
     syncTtlMs: boundedInteger(input.syncTtlMs, DEFAULT_MIHOMO_CONFIG.syncTtlMs, 1000, 600000),
     maxAttemptsPerRequest: boundedInteger(input.maxAttemptsPerRequest, DEFAULT_MIHOMO_CONFIG.maxAttemptsPerRequest, 1, 50),
     regionOrder: regionList(input.regionOrder),
+    egressProbeUrl: normalizeEgressProbeUrl(input.egressProbeUrl),
+    egressProbeTimeoutMs: boundedInteger(input.egressProbeTimeoutMs, DEFAULT_MIHOMO_CONFIG.egressProbeTimeoutMs, 1000, 30000),
+    samplesPerNode: boundedInteger(input.samplesPerNode, DEFAULT_MIHOMO_CONFIG.samplesPerNode, 1, 5),
+    egressProbeTtlMs: boundedInteger(input.egressProbeTtlMs, DEFAULT_MIHOMO_CONFIG.egressProbeTtlMs, 60000, 604800000),
+    preferDistinctEgress: input.preferDistinctEgress === true,
+    egressScopedCooldown: input.egressScopedCooldown === true,
     cooldown: {
       baseMs,
       multiplier: boundedNumber(cooldown.multiplier, DEFAULT_MIHOMO_CONFIG.cooldown.multiplier, 1, 10),
@@ -103,5 +132,5 @@ export function mergeMihomoConfig(current = {}, updates = {}) {
 }
 
 export function createEmptyMihomoState() {
-  return { proxyProviders: {} };
+  return { proxyProviders: {}, egressIdentities: {} };
 }

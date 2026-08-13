@@ -38,4 +38,17 @@ describe("Mihomo pool configuration", () => {
     expect(merged.controllerSecret).toBe("secret");
     expect(merged.selectorName).toBe("new-selector");
   });
+
+  it("defaults discovery safely without enabling routing changes", () => {
+    const config = normalizeMihomoConfig(baseConfig);
+    expect(config.egressProbeUrl).toBe("https://api.ipify.org/");
+    expect(config.samplesPerNode).toBe(2);
+    expect(config.egressProbeTtlMs).toBe(21600000);
+    expect(config.preferDistinctEgress).toBe(false);
+    expect(config.egressScopedCooldown).toBe(false);
+  });
+
+  it("requires an HTTPS egress probe URL", () => {
+    expect(() => normalizeMihomoConfig({ ...baseConfig, egressProbeUrl: "http://probe.example.test" })).toThrow(/HTTPS/);
+  });
 });

@@ -3,7 +3,7 @@ import { createMihomoClient, MIHOMO_ERROR_CODES, validateMihomoControllerUrl } f
 import { normalizeMihomoConfig } from "./mihomoConfig.js";
 import { isMihomoProxyPool } from "./proxyPoolTypes.js";
 import { mihomoSelectorMutex } from "./keyedMutex.js";
-import { discoverMihomoNodeDirectory, getMihomoNodeBusinessState } from "./mihomoState.js";
+import { attachMihomoNodeEgress, discoverMihomoNodeDirectory, getMihomoNodeBusinessState } from "./mihomoState.js";
 
 function text(value) {
   return value === undefined || value === null ? "" : String(value).trim();
@@ -207,16 +207,17 @@ export async function prepareMihomoRouteAttempt({
     secret: config.controllerSecret,
     timeoutMs: config.controllerTimeoutMs,
   });
-  const directory = await discoverMihomoNodeDirectory({
+  const directory = attachMihomoNodeEgress(await discoverMihomoNodeDirectory({
     poolId,
     client,
     selectorName: config.selectorName,
     providerNames: config.providerNames,
     includeRegex: config.includeRegex,
     excludeRegex: config.excludeRegex,
+    mihomoState: pool.mihomoState,
     ttlMs: config.syncTtlMs,
     nowMs,
-  });
+  }), pool);
 
   const availableNodes = directory.nodes.filter((node) => {
     if (routeContext.attemptedNodeKeys.has(node.key)) return false;
