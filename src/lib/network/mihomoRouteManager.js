@@ -3,6 +3,7 @@ import { createMihomoClient, MIHOMO_ERROR_CODES, validateMihomoControllerUrl } f
 import { normalizeMihomoConfig } from "./mihomoConfig.js";
 import { isMihomoProxyPool } from "./proxyPoolTypes.js";
 import { mihomoSelectorMutex } from "./keyedMutex.js";
+import { enqueueMihomoEgressProbe, getMihomoEgressProbeReason } from "./mihomoEgressScheduler.js";
 import {
   attachMihomoNodeEgress,
   discoverMihomoNodeDirectory,
@@ -280,6 +281,7 @@ export async function prepareMihomoRouteAttempt({
   routeContext,
   getPool = getProxyPoolById,
   makeClient = createMihomoClient,
+  enqueueProbe = null,
   nowMs = Date.now(),
 } = {}) {
   if (!routeContext || !(routeContext.attemptedNodeKeys instanceof Set) || !(routeContext.deprioritizedRegions instanceof Set)) {
@@ -303,6 +305,36 @@ export async function prepareMihomoRouteAttempt({
     ttlMs: config.syncTtlMs,
     nowMs,
   }), pool);
+
+  // Mapping maintenance is deliberately fire-and-forget. The request keeps
+  // using the safe node-scoped fallback while a single background worker
+  // refreshes unknown/stale/expiring nodes through the same Selector lease.
+  const queueProbe = enqueueProbe || (getPool === getProxyPoolById ? enqueueMihomoEgressProbe : null);
+  if (queueProbe) {
+    for (const node of directory.nodes) {
+      const reason = getMihomoEgressProbeReason(node.egress, {
+        nowMs,
+        ttlMs: config.egressProbeTtlMs,
+      });
+      if (!reason) continue;
+      try {
+        const queued = queueProbe({
+          poolId,
+          proxyProvider: node.proxyProvider,
+          nodeName: node.nodeName,
+          egress: node.egress,
+          reason,
+          ttlMs: config.egressProbeTtlMs,
+          getPool,
+          makeClient,
+        });
+        if (queued && typeof queued.then === "function") void queued.catch(() => {});
+      } catch {
+        // Queue maintenance must never turn a healthy route preparation into
+        // a user-visible failure.
+      }
+    }
+  }
 
   const availableNodes = directory.nodes.filter((node) => {
     if (routeContext.attemptedNodeKeys.has(node.key)) return false;
