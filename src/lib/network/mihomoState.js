@@ -419,6 +419,13 @@ function shouldPersistSuccess(state, nowMs) {
   return !Number.isFinite(lastSuccessAt) || nowMs - lastSuccessAt > 60000;
 }
 
+function hasNewerFailure(state, attemptStartedAtMs) {
+  const attemptStartedAt = Number(attemptStartedAtMs);
+  if (!Number.isFinite(attemptStartedAt)) return false;
+  const lastErrorAt = Date.parse(state?.lastErrorAt || "");
+  return Number.isFinite(lastErrorAt) && lastErrorAt > attemptStartedAt;
+}
+
 export async function recordMihomoNodeEgress({
   proxyPoolId,
   route,
@@ -562,6 +569,16 @@ export async function recordMihomoRouteSuccess({
     const state = scope.kind === "egress"
       ? getMutableEgressBusinessState(current, scope.identityKey, businessProviderId)
       : getMutableBusinessState(current, route, businessProviderId);
+
+    // A request can finish successfully after a newer concurrent request has
+    // already recorded a rate limit. Keep that newer cooldown intact; the
+    // success belongs to the older attempt and must not reset it.
+    if (hasNewerFailure(state, route?.attemptStartedAtMs)) {
+      state.lastSuccessAt = new Date(nowMs).toISOString();
+      updated = true;
+      return current;
+    }
+
     Object.assign(state, {
       cooldownUntil: null,
       backoffLevel: 0,

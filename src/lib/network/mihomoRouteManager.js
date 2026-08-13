@@ -132,7 +132,7 @@ export function getMihomoSelectorMutexSize() {
   return mihomoSelectorMutex.size;
 }
 
-export function buildMihomoRoute({ proxyPoolId, proxyProvider, nodeName, region, selectorName, attempt, routeId, egressIdentityKey: identityKey = null, egressConfidence = "unknown" }) {
+export function buildMihomoRoute({ proxyPoolId, proxyProvider, nodeName, region, selectorName, attempt, attemptStartedAtMs = Date.now(), routeId, egressIdentityKey: identityKey = null, egressConfidence = "unknown" }) {
   return {
     proxyPoolId,
     proxyProvider: proxyProvider || null,
@@ -142,6 +142,7 @@ export function buildMihomoRoute({ proxyPoolId, proxyProvider, nodeName, region,
     egressIdentityKey: identityKey || null,
     egressConfidence: egressConfidence || "unknown",
     attempt: Number.isFinite(attempt) ? attempt : 1,
+    attemptStartedAtMs: Number.isFinite(Number(attemptStartedAtMs)) ? Number(attemptStartedAtMs) : Date.now(),
     routeId: routeId || `${proxyPoolId}:${nodeName}:${Date.now()}`,
   };
 }
@@ -355,6 +356,7 @@ export async function prepareMihomoRouteAttempt({
       region: shadowCandidate.node.region,
       selectorName: directory.selectorName || config.selectorName,
       attempt: routeContext.attempts,
+      attemptStartedAtMs: nowMs,
       egressIdentityKey: shadowCandidate.egressKey,
       egressConfidence: shadowCandidate.node.egress?.confidence,
     })
@@ -367,6 +369,7 @@ export async function prepareMihomoRouteAttempt({
       region: candidate.region,
       selectorName: directory.selectorName || config.selectorName,
       attempt: routeContext.attempts,
+      attemptStartedAtMs: nowMs,
       egressIdentityKey: candidateEgressKey,
       egressConfidence: candidate.egress?.confidence,
     }),
