@@ -215,6 +215,7 @@ export async function testMihomoPool({
       alive: node.alive,
       delayMs: node.delayMs,
     })),
+    summary: summarizeMihomoEgressInventory(directory.nodes),
     warnings: directory.warnings,
   };
 }

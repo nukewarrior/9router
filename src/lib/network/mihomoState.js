@@ -429,6 +429,31 @@ export async function clearMihomoNodeEgress({
   return { updated, pool };
 }
 
+export async function clearMihomoEgressCooldown({
+  proxyPoolId,
+  identityKey,
+  businessProviderId,
+  mutatePool = defaultMutateProxyPool,
+} = {}) {
+  let updated = false;
+  const pool = await mutatePool(proxyPoolId, (current) => {
+    if (!current?.mihomo || typeof current.mihomo !== "object") return current;
+    const state = getMutableEgressBusinessState(current, identityKey, businessProviderId);
+    Object.assign(state, {
+      cooldownUntil: null,
+      backoffLevel: 0,
+      lastStatus: null,
+      lastErrorType: null,
+      lastError: null,
+      lastErrorAt: null,
+      lastSuccessAt: state.lastSuccessAt || null,
+    });
+    updated = true;
+    return current;
+  });
+  return { updated, pool };
+}
+
 export async function recordMihomoRouteFailure({
   proxyPoolId,
   route,

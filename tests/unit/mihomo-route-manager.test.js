@@ -121,4 +121,29 @@ describe("Mihomo route candidate selection", () => {
     expect(second.route.region).toBe("TW");
     expect(second.route.nodeName).not.toBe(first.route.nodeName);
   });
+
+  it("keeps node routing unchanged while exposing a distinct-egress shadow candidate", async () => {
+    const pool = makePool("pool-shadow");
+    const nodes = [{ name: "JP-A01" }, { name: "JP-A02" }];
+    pool.mihomoState.proxyProviders.subscription = {
+      nodes: {
+        "JP-A01": { egress: { ip: "1.2.3.5", family: 4, identityKey: "4:1.2.3.5", confidence: "stable", expiresAt: 9999999999999 } },
+        "JP-A02": { egress: { ip: "1.2.3.4", family: 4, identityKey: "4:1.2.3.4", confidence: "stable", expiresAt: 9999999999999 } },
+      },
+    };
+    const context = { attemptedNodeKeys: new Set(), deprioritizedRegions: new Set(), attempts: 0 };
+    const result = await prepareMihomoRouteAttempt({
+      poolId: pool.id,
+      businessProviderId: "opencode",
+      routeContext: context,
+      getPool: async () => pool,
+      makeClient: () => clientFor(nodes),
+      nowMs: 100,
+    });
+
+    expect(result.route.nodeName).toBe("JP-A01");
+    expect(result.route.egressIdentityKey).toBe("4:1.2.3.5");
+    expect(result.shadowRoute).toMatchObject({ nodeName: "JP-A02", egressIdentityKey: "4:1.2.3.4" });
+    expect(context.attemptedEgressKeys).toEqual(new Set());
+  });
 });

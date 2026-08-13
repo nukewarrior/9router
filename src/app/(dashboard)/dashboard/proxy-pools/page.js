@@ -38,6 +38,12 @@ function normalizeFormData(data = {}) {
       maxAttemptsPerRequest: String(mihomo.maxAttemptsPerRequest || 6),
       controllerTimeoutMs: String(mihomo.controllerTimeoutMs || 3000),
       syncTtlMs: String(mihomo.syncTtlMs || 30000),
+      egressProbeUrl: mihomo.egressProbeUrl || "https://api.ipify.org",
+      egressProbeTimeoutMs: String(mihomo.egressProbeTimeoutMs || 8000),
+      samplesPerNode: String(mihomo.samplesPerNode || 2),
+      egressProbeTtlMs: String(mihomo.egressProbeTtlMs || 21600000),
+      preferDistinctEgress: mihomo.preferDistinctEgress === true,
+      egressScopedCooldown: mihomo.egressScopedCooldown === true,
       cooldownBaseMs: String(cooldown.baseMs || 300000),
       cooldownMultiplier: String(cooldown.multiplier || 3),
       cooldownMaxMs: String(cooldown.maxMs || 1800000),
@@ -62,6 +68,12 @@ function toMihomoPayload(formData) {
     maxAttemptsPerRequest: Number(mihomo.maxAttemptsPerRequest),
     controllerTimeoutMs: Number(mihomo.controllerTimeoutMs),
     syncTtlMs: Number(mihomo.syncTtlMs),
+    egressProbeUrl: mihomo.egressProbeUrl.trim(),
+    egressProbeTimeoutMs: Number(mihomo.egressProbeTimeoutMs),
+    samplesPerNode: Number(mihomo.samplesPerNode),
+    egressProbeTtlMs: Number(mihomo.egressProbeTtlMs),
+    preferDistinctEgress: mihomo.preferDistinctEgress === true,
+    egressScopedCooldown: mihomo.egressScopedCooldown === true,
     cooldown: {
       baseMs: Number(mihomo.cooldownBaseMs),
       multiplier: Number(mihomo.cooldownMultiplier),
@@ -92,7 +104,9 @@ export default function ProxyPoolsPage() {
   const [testingId, setTestingId] = useState(null);
   const [mihomoTestBusy, setMihomoTestBusy] = useState(false);
   const [mihomoNodes, setMihomoNodes] = useState([]);
+  const [mihomoSummary, setMihomoSummary] = useState(null);
   const [mihomoNodesLoading, setMihomoNodesLoading] = useState(false);
+  const [mihomoEgressProbeBusy, setMihomoEgressProbeBusy] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
   const [healthChecking, setHealthChecking] = useState(false);
   const [healthProgress, setHealthProgress] = useState({ current: 0, total: 0 });
@@ -137,6 +151,7 @@ export default function ProxyPoolsPage() {
     setEditingProxyPool(null);
     setFormData(normalizeFormData());
     setMihomoNodes([]);
+    setMihomoSummary(null);
   };
 
   const openCreateModal = () => {
@@ -148,6 +163,7 @@ export default function ProxyPoolsPage() {
     setEditingProxyPool(proxyPool);
     setFormData(normalizeFormData(proxyPool));
     setMihomoNodes([]);
+    setMihomoSummary(null);
     setShowFormModal(true);
   };
 
@@ -219,6 +235,7 @@ export default function ProxyPoolsPage() {
         return;
       }
       setMihomoNodes(data.nodes || []);
+      setMihomoSummary(data.summary || null);
       notify.success(`Mihomo ready: ${data.nodes?.length || 0} leaf nodes found`);
     } catch (error) {
       console.log("Error testing Mihomo pool:", error);
@@ -242,11 +259,48 @@ export default function ProxyPoolsPage() {
         return;
       }
       setMihomoNodes(data.nodes || []);
+      setMihomoSummary(data.summary || null);
     } catch (error) {
       console.log("Error loading Mihomo nodes:", error);
       notify.error("Failed to load Mihomo nodes");
     } finally {
       setMihomoNodesLoading(false);
+    }
+  };
+
+  const handleProbeMihomoEgress = async ({ node = null, force = false } = {}) => {
+    if (!editingProxyPool) {
+      notify.warning("Save the Mihomo pool before probing egress identities.");
+      return;
+    }
+    setMihomoEgressProbeBusy(true);
+    try {
+      const body = node
+        ? {
+          proxyProvider: node.proxyProvider,
+          nodeName: node.nodeName || node.name,
+          force,
+        }
+        : { force };
+      const res = await fetch(`/api/proxy-pools/${editingProxyPool.id}/mihomo/egress/probe`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        notify.error(data.error || "Egress probe failed");
+        return;
+      }
+      if (data.summary) setMihomoSummary(data.summary);
+      await handleLoadMihomoNodes();
+      const count = data.results ? data.results.length : 1;
+      notify.success(`${node ? "Node" : "Egress scan"} completed (${count} probe${count === 1 ? "" : "s"})`);
+    } catch (error) {
+      console.log("Error probing Mihomo egress:", error);
+      notify.error("Egress probe failed");
+    } finally {
+      setMihomoEgressProbeBusy(false);
     }
   };
 
@@ -272,6 +326,27 @@ export default function ProxyPoolsPage() {
     } catch (error) {
       console.log("Error clearing Mihomo cooldown:", error);
       notify.error("Failed to clear cooldown");
+    }
+  };
+
+  const handleClearMihomoEgressCooldown = async (node) => {
+    if (!editingProxyPool || !node.exitIdentityKey) return;
+    try {
+      const res = await fetch(`/api/proxy-pools/${editingProxyPool.id}/mihomo/clear-egress-cooldown`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ identityKey: node.exitIdentityKey, businessProvider: "opencode" }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        notify.error(data.error || "Failed to clear egress cooldown");
+        return;
+      }
+      notify.success("Exit identity cooldown cleared");
+      await handleLoadMihomoNodes();
+    } catch (error) {
+      console.log("Error clearing Mihomo egress cooldown:", error);
+      notify.error("Failed to clear egress cooldown");
     }
   };
 
@@ -348,6 +423,15 @@ export default function ProxyPoolsPage() {
   };
 
   const allSelected = proxyPools.length > 0 && selectedIds.length === proxyPools.length;
+  const mihomoExitGroups = useMemo(() => {
+    const groups = new Map();
+    for (const node of mihomoNodes) {
+      if (!node.exitIdentityKey || !node.exitFresh || node.exitConfidence !== "stable") continue;
+      if (!groups.has(node.exitIdentityKey)) groups.set(node.exitIdentityKey, []);
+      groups.get(node.exitIdentityKey).push(node);
+    }
+    return [...groups.entries()].filter(([, nodes]) => nodes.length > 1);
+  }, [mihomoNodes]);
   const toggleSelect = (id) => setSelectedIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
   const toggleSelectAll = () => setSelectedIds(allSelected ? [] : proxyPools.map((p) => p.id));
   const clearSelection = () => setSelectedIds([]);
@@ -1257,6 +1341,66 @@ export default function ProxyPoolsPage() {
                 onChange={(e) => setFormData((prev) => ({ ...prev, mihomo: { ...prev.mihomo, regionOrderText: e.target.value } }))}
                 placeholder="TW, JP, US, SG, HK, OTHER"
               />
+              <div className="border-t border-primary/15 pt-3">
+                <p className="text-sm font-medium text-text-main">Egress identity awareness</p>
+                <p className="text-xs text-text-muted mt-1">
+                  Discovery is offline/admin-only. Unknown or stale mappings always fall back to node routing.
+                </p>
+              </div>
+              <Input
+                label="Egress Probe URL"
+                value={formData.mihomo.egressProbeUrl}
+                onChange={(e) => setFormData((prev) => ({ ...prev, mihomo: { ...prev.mihomo, egressProbeUrl: e.target.value } }))}
+                placeholder="https://api.ipify.org"
+                hint="HTTPS only; the probe is requested through the selected Mihomo listener."
+              />
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <Input
+                  label="Samples / Node"
+                  type="number"
+                  min="1"
+                  max="5"
+                  value={formData.mihomo.samplesPerNode}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, mihomo: { ...prev.mihomo, samplesPerNode: e.target.value } }))}
+                />
+                <Input
+                  label="Probe Timeout (ms)"
+                  type="number"
+                  min="1000"
+                  max="30000"
+                  value={formData.mihomo.egressProbeTimeoutMs}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, mihomo: { ...prev.mihomo, egressProbeTimeoutMs: e.target.value } }))}
+                />
+                <Input
+                  label="Mapping TTL (ms)"
+                  type="number"
+                  min="60000"
+                  value={formData.mihomo.egressProbeTtlMs}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, mihomo: { ...prev.mihomo, egressProbeTtlMs: e.target.value } }))}
+                />
+              </div>
+              <div className="flex flex-col gap-3 rounded-lg border border-border/50 p-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="font-medium text-sm">Prefer distinct exit identities</p>
+                  <p className="text-xs text-text-muted">Phase 3 scheduler flag. Keep off for node-only routing.</p>
+                </div>
+                <Toggle
+                  checked={formData.mihomo.preferDistinctEgress === true}
+                  onChange={() => setFormData((prev) => ({ ...prev, mihomo: { ...prev.mihomo, preferDistinctEgress: !prev.mihomo.preferDistinctEgress } }))}
+                  disabled={saving}
+                />
+              </div>
+              <div className="flex flex-col gap-3 rounded-lg border border-border/50 p-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="font-medium text-sm">Exit-IP scoped cooldown</p>
+                  <p className="text-xs text-text-muted">Phase 4 business cooldown flag. Unknown mappings remain node-scoped.</p>
+                </div>
+                <Toggle
+                  checked={formData.mihomo.egressScopedCooldown === true}
+                  onChange={() => setFormData((prev) => ({ ...prev, mihomo: { ...prev.mihomo, egressScopedCooldown: !prev.mihomo.egressScopedCooldown } }))}
+                  disabled={saving}
+                />
+              </div>
               <div className="flex flex-wrap gap-2">
                 <Button size="sm" variant="secondary" icon="science" onClick={handleMihomoTest} disabled={saving || mihomoTestBusy}>
                   {mihomoTestBusy ? "Testing..." : "Test"}
@@ -1264,36 +1408,90 @@ export default function ProxyPoolsPage() {
                 <Button size="sm" variant="ghost" icon="refresh" onClick={handleLoadMihomoNodes} disabled={saving || mihomoNodesLoading || mihomoTestBusy}>
                   {mihomoNodesLoading ? "Loading..." : "Load nodes"}
                 </Button>
+                {editingProxyPool && (
+                  <Button size="sm" variant="ghost" icon="public" onClick={() => handleProbeMihomoEgress({ force: false })} disabled={saving || mihomoEgressProbeBusy || mihomoNodesLoading}>
+                    {mihomoEgressProbeBusy ? "Probing..." : "Scan exit IPs"}
+                  </Button>
+                )}
               </div>
+              {mihomoSummary && (
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
+                  {[
+                    ["Leaf nodes", mihomoSummary.leafNodes],
+                    ["Probed", mihomoSummary.probedNodes],
+                    ["Fresh stable", mihomoSummary.freshStableMappings],
+                    ["Distinct exit IP", mihomoSummary.distinctExitIps],
+                    ["Dynamic", mihomoSummary.dynamicNodes],
+                    ["Unknown / stale", (mihomoSummary.unknownNodes || 0) + (mihomoSummary.staleNodes || 0)],
+                  ].map(([label, value]) => (
+                    <div key={label} className="rounded-lg border border-black/10 dark:border-white/10 px-3 py-2">
+                      <p className="text-[11px] text-text-muted">{label}</p>
+                      <p className="text-lg font-semibold text-text-main">{value ?? 0}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {mihomoExitGroups.length > 0 && (
+                <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs">
+                  <p className="font-medium text-text-main">Same-IP groups</p>
+                  <div className="mt-1 flex flex-col gap-1 text-text-muted">
+                    {mihomoExitGroups.map(([identityKey, nodes]) => (
+                      <p key={identityKey}>
+                        <code>{nodes[0].exitIp || identityKey}</code> · {nodes.map((node) => node.nodeName || node.name).join(", ")}
+                      </p>
+                    ))}
+                  </div>
+                </div>
+              )}
               {mihomoNodes.length > 0 && (
                 <div className="overflow-x-auto rounded-lg border border-black/10 dark:border-white/10 bg-white/60 dark:bg-black/10">
                   <table className="w-full text-xs">
                     <thead className="border-b border-black/10 dark:border-white/10 text-left text-text-muted">
                       <tr>
                         <th className="px-3 py-2 font-medium">Node</th>
-                        <th className="px-3 py-2 font-medium">Provider</th>
                         <th className="px-3 py-2 font-medium">Region</th>
-                        <th className="px-3 py-2 font-medium">State</th>
+                        <th className="px-3 py-2 font-medium">Exit IP</th>
+                        <th className="px-3 py-2 font-medium">Same IP</th>
+                        <th className="px-3 py-2 font-medium">Mapping</th>
+                        <th className="px-3 py-2 font-medium">OpenCode</th>
                         <th className="px-3 py-2" />
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-black/5 dark:divide-white/5">
                       {mihomoNodes.map((node) => {
                         const state = node.providerState?.opencode || {};
+                        const mappingLabel = `${node.exitConfidence || "unknown"}${node.exitFresh ? " · fresh" : node.exitConfidence === "unknown" ? "" : " · stale"}`;
                         return (
                           <tr key={`${node.proxyProvider}\0${node.nodeName || node.name}`}>
-                            <td className="max-w-[12rem] truncate px-3 py-2 text-text-main">{node.nodeName || node.name}</td>
-                            <td className="px-3 py-2 text-text-muted">{node.proxyProvider}</td>
+                            <td className="max-w-[12rem] truncate px-3 py-2 text-text-main" title={node.nodeName || node.name}>
+                              <span className="block truncate">{node.nodeName || node.name}</span>
+                              <span className="block truncate text-[11px] text-text-muted">{node.proxyProvider}</span>
+                            </td>
                             <td className="px-3 py-2 text-text-muted">{node.region}</td>
+                            <td className="px-3 py-2 font-mono text-text-main">{node.exitIp || "—"}</td>
+                            <td className="px-3 py-2 text-text-muted">{node.exitGroupSize > 1 ? node.exitGroupSize : "—"}</td>
+                            <td className="px-3 py-2">
+                              <Badge size="sm" variant={node.exitConfidence === "stable" && node.exitFresh ? "success" : node.exitConfidence === "dynamic" ? "warning" : "default"}>
+                                {mappingLabel}
+                              </Badge>
+                            </td>
                             <td className="px-3 py-2">
                               <Badge size="sm" variant={state.status === "healthy" ? "success" : state.status === "cooldown" ? "warning" : "default"}>
                                 {state.status || "unknown"}
                               </Badge>
                             </td>
-                            <td className="px-3 py-2 text-right">
+                            <td className="px-3 py-2 text-right whitespace-nowrap">
+                              <button className="mr-2 text-primary hover:underline disabled:opacity-50" onClick={() => handleProbeMihomoEgress({ node, force: true })} disabled={mihomoEgressProbeBusy}>
+                                Probe
+                              </button>
                               {state.cooldownUntil && editingProxyPool && (
-                                <button className="text-primary hover:underline" onClick={() => handleClearMihomoCooldown(node)}>
-                                  Clear
+                                <button className="mr-2 text-primary hover:underline" onClick={() => handleClearMihomoCooldown(node)}>
+                                  Clear node
+                                </button>
+                              )}
+                              {node.exitCooldownUntil && editingProxyPool && (
+                                <button className="text-primary hover:underline" onClick={() => handleClearMihomoEgressCooldown(node)}>
+                                  Clear exit
                                 </button>
                               )}
                             </td>

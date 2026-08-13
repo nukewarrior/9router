@@ -262,6 +262,9 @@ export async function executeMihomoNoAuthRoute({
 
     const route = prepared.route;
     log.info("MIHOMO", `pool=${poolId} selector="${route.selectorName}" attempt=${route.attempt}/${prepared.effectiveMaxAttempts} node="${route.nodeName}" region=${route.region}`);
+    if (prepared.shadowRoute && prepared.shadowRoute.nodeName !== route.nodeName) {
+      log.debug("MIHOMO", `shadow egress candidate node="${prepared.shadowRoute.nodeName}" identity="${prepared.shadowRoute.egressIdentityKey || "unknown"}"`);
+    }
 
     let result;
     try {

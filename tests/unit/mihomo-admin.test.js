@@ -20,7 +20,7 @@ function makePool() {
       providerNames: ["subscription"],
       syncTtlMs: 30000,
     },
-    mihomoState: { proxyProviders: {} },
+    mihomoState: { proxyProviders: {}, egressIdentities: {} },
   };
 }
 
@@ -60,6 +60,16 @@ describe("Mihomo admin operations", () => {
     pool.mihomoState.proxyProviders.subscription = {
       nodes: {
         "🇹🇼 TW-A30": {
+          egress: {
+            ip: "61.219.114.43",
+            family: 4,
+            identityKey: "4:61.219.114.43",
+            confidence: "stable",
+            sampleCount: 2,
+            successfulSamples: 2,
+            observedAt: Date.now(),
+            expiresAt: Date.now() + 60000,
+          },
           business: {
             opencode: {
               cooldownUntil: new Date(Date.now() + 60000).toISOString(),
@@ -73,7 +83,16 @@ describe("Mihomo admin operations", () => {
     const result = await getMihomoNodeStatus({ pool, makeClient: () => fakeClient() });
     expect(result.selector).toMatchObject({ name: "selector", now: "🇹🇼 TW-A30" });
     expect(result.nodes[0].providerState.opencode).toMatchObject({ status: "cooldown", lastStatus: 429 });
+    expect(result.nodes[0]).toMatchObject({
+      exitIp: "61.219.114.43",
+      exitIpFamily: 4,
+      exitIdentityKey: "4:61.219.114.43",
+      exitConfidence: "stable",
+      exitFresh: true,
+      exitGroupSize: 1,
+    });
     expect(result.nodes[1].providerState.opencode.status).toBe("unknown");
+    expect(result.summary).toMatchObject({ leafNodes: 2, probedNodes: 1, freshStableMappings: 1, distinctExitIps: 1 });
   });
 
   it("maps invalid configuration to a client-safe 400 response", () => {
