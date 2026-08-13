@@ -167,25 +167,68 @@ describe("Mihomo egress-aware scheduling", () => {
     expect(result.route).toMatchObject({ region: "TW", nodeName: "TW-A02", egressIdentityKey: "4:1.2.3.5" });
   });
 
-  it("keeps unknown, dynamic and stale mappings as independent safe candidates", async () => {
-    const pool = makePool();
-    const nodes = [
-      { name: "TW-UNKNOWN", provider: "sub-a" },
-      { name: "TW-DYNAMIC", provider: "sub-a" },
-      { name: "TW-STALE", provider: "sub-a" },
-    ];
-    setEgress(pool, "sub-a", "TW-DYNAMIC", "4:1.2.3.4", { confidence: "dynamic" });
-    setEgress(pool, "sub-a", "TW-STALE", "4:1.2.3.5", { expiresAt: 999 });
+  it.each([
+    [
+      "unknown",
+      null,
+      {
+        identityKey: null,
+        confidence: "unknown",
+        observedAt: null,
+        expiresAt: null,
+        scopeEligible: false,
+      },
+    ],
+    [
+      "dynamic",
+      {
+        ip: "1.2.3.4",
+        family: 4,
+        identityKey: "4:1.2.3.4",
+        confidence: "dynamic",
+        observedAt: 100,
+        expiresAt: 9999999999999,
+      },
+      {
+        identityKey: "4:1.2.3.4",
+        confidence: "dynamic",
+        observedAt: 100,
+        expiresAt: 9999999999999,
+        scopeEligible: false,
+      },
+    ],
+    [
+      "stale",
+      {
+        ip: "1.2.3.5",
+        family: 4,
+        identityKey: "4:1.2.3.5",
+        confidence: "stable",
+        observedAt: 100,
+        expiresAt: 999,
+      },
+      {
+        identityKey: "4:1.2.3.5",
+        confidence: "stable",
+        observedAt: 100,
+        expiresAt: 999,
+        scopeEligible: false,
+      },
+    ],
+  ])("keeps %s mappings safe while preserving their attempt snapshot", async (caseName, egress, expectedSnapshot) => {
+    const pool = makePool(`egress-route-${caseName}`);
+    const nodeName = `TW-${caseName.toUpperCase()}`;
+    const nodes = [{ name: nodeName, provider: "sub-a" }];
+    if (egress) {
+      setEgress(pool, "sub-a", nodeName, egress.identityKey, {
+        confidence: egress.confidence,
+        expiresAt: egress.expiresAt,
+      });
+    }
     const result = await prepare(pool, nodes);
     expect(result.route).not.toBeNull();
     expect(result.route.egressIdentityKey).toMatch(/^node:/);
-    expect(result.route.egressSnapshot).toMatchObject({
-      identityKey: null,
-      confidence: "unknown",
-      observedAt: null,
-      expiresAt: null,
-      scopeEligible: false,
-    });
+    expect(result.route.egressSnapshot).toMatchObject(expectedSnapshot);
     expect(getMihomoEgressCandidateKey({ key: "sub-a\0TW-UNKNOWN", egress: null }, 1000)).toBe("node:sub-a\0TW-UNKNOWN");
   });
 });
