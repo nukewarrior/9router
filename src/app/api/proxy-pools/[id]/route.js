@@ -5,9 +5,11 @@ import {
   getProxyPoolById,
   updateProxyPool,
 } from "@/models";
-import { PROXY_POOL_TYPES } from "@/lib/network/proxyPoolTypes.js";
+import { PROXY_POOL_TYPES, isMihomoProxyPool } from "@/lib/network/proxyPoolTypes.js";
+import { mergeMihomoConfig, normalizeMihomoConfig } from "@/lib/network/mihomoConfig.js";
+import { toPublicProxyPool } from "@/lib/network/proxyPoolDto.js";
 
-function normalizeProxyPoolUpdate(body = {}) {
+function normalizeProxyPoolUpdate(body = {}, existing = {}) {
   const updates = {};
 
   if (Object.prototype.hasOwnProperty.call(body, "name")) {
@@ -42,6 +44,26 @@ function normalizeProxyPoolUpdate(body = {}) {
     updates.type = PROXY_POOL_TYPES.has(body?.type) ? body.type : "http";
   }
 
+  const nextType = updates.type || existing.type;
+  if (isMihomoProxyPool(nextType)) {
+    const existingMihomo = existing.mihomo && typeof existing.mihomo === "object" ? existing.mihomo : {};
+    const incomingMihomo = body?.mihomo && typeof body.mihomo === "object" ? { ...body.mihomo } : {};
+    const requestedSecret = Object.prototype.hasOwnProperty.call(body, "controllerSecret")
+      ? body.controllerSecret
+      : incomingMihomo.controllerSecret;
+    delete incomingMihomo.controllerSecret;
+
+    let controllerSecret = existingMihomo.controllerSecret || "";
+    if (body.clearControllerSecret === true) controllerSecret = "";
+    else if (typeof requestedSecret === "string" && requestedSecret.trim()) controllerSecret = requestedSecret.trim();
+
+    updates.mihomo = mergeMihomoConfig(existingMihomo, {
+      ...incomingMihomo,
+      controllerSecret,
+    });
+    updates.strictProxy = true;
+  }
+
   return { updates };
 }
 
@@ -59,7 +81,7 @@ export async function GET(request, { params }) {
       return NextResponse.json({ error: "Proxy pool not found" }, { status: 404 });
     }
 
-    return NextResponse.json({ proxyPool });
+    return NextResponse.json({ proxyPool: toPublicProxyPool(proxyPool) });
   } catch (error) {
     console.log("Error fetching proxy pool:", error);
     return NextResponse.json({ error: "Failed to fetch proxy pool" }, { status: 500 });
@@ -77,14 +99,19 @@ export async function PUT(request, { params }) {
     }
 
     const body = await request.json();
-    const normalized = normalizeProxyPoolUpdate(body);
+    let normalized;
+    try {
+      normalized = normalizeProxyPoolUpdate(body, existing);
+    } catch (error) {
+      return NextResponse.json({ error: error.message || "Invalid Mihomo configuration" }, { status: 400 });
+    }
 
     if (normalized.error) {
       return NextResponse.json({ error: normalized.error }, { status: 400 });
     }
 
     const updated = await updateProxyPool(id, normalized.updates);
-    return NextResponse.json({ proxyPool: updated });
+    return NextResponse.json({ proxyPool: toPublicProxyPool(updated) });
   } catch (error) {
     console.log("Error updating proxy pool:", error);
     return NextResponse.json({ error: "Failed to update proxy pool" }, { status: 500 });

@@ -1,6 +1,16 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { createEmptyMihomoState } from "../../network/mihomoConfig.js";
+import { isMihomoProxyPool, normalizeProxyPoolType } from "../../network/proxyPoolTypes.js";
+
+function cloneJson(value, fallback = null) {
+  if (value === undefined || value === null) return fallback;
+  if (typeof structuredClone === "function") {
+    try { return structuredClone(value); } catch { /* use JSON fallback */ }
+  }
+  try { return JSON.parse(JSON.stringify(value)); } catch { return fallback; }
+}
 
 function rowToPool(row) {
   if (!row) return null;
@@ -59,17 +69,20 @@ export async function getProxyPoolById(id) {
 export async function createProxyPool(data) {
   const db = await getAdapter();
   const now = new Date().toISOString();
+  const type = normalizeProxyPoolType(data.type);
   const pool = {
     id: data.id || uuidv4(),
     name: data.name,
     proxyUrl: data.proxyUrl,
     noProxy: data.noProxy || "",
-    type: data.type || "http",
+    type,
     isActive: data.isActive !== undefined ? data.isActive : true,
-    strictProxy: data.strictProxy === true,
+    strictProxy: isMihomoProxyPool(type) || data.strictProxy === true,
     testStatus: data.testStatus || "unknown",
     lastTestedAt: data.lastTestedAt || null,
     lastError: data.lastError || null,
+    mihomo: cloneJson(data.mihomo, null),
+    mihomoState: cloneJson(data.mihomoState, isMihomoProxyPool(type) ? createEmptyMihomoState() : null),
     createdAt: now,
     updatedAt: now,
   };
@@ -86,6 +99,36 @@ export async function updateProxyPool(id, data) {
     const merged = { ...rowToPool(row), ...data, updatedAt: new Date().toISOString() };
     upsert(db, merged);
     result = merged;
+  });
+  return result;
+}
+
+/**
+ * Atomically mutate one proxy pool. Mihomo node state must use this helper;
+ * read-modify-write outside the transaction can lose concurrent cooldowns.
+ */
+export async function mutateProxyPool(id, mutator) {
+  if (typeof mutator !== "function") throw new TypeError("mutator must be a function");
+
+  const db = await getAdapter();
+  let result = null;
+  db.transaction(() => {
+    const row = db.get(`SELECT * FROM proxyPools WHERE id = ?`, [id]);
+    if (!row) return;
+
+    const current = rowToPool(row);
+    const next = mutator(cloneJson(current, current));
+    if (!next) return;
+    if (typeof next !== "object" || Array.isArray(next)) {
+      throw new TypeError("proxy pool mutator must return an object or null");
+    }
+
+    result = {
+      ...next,
+      id: current.id,
+      updatedAt: new Date().toISOString(),
+    };
+    upsert(db, result);
   });
   return result;
 }
