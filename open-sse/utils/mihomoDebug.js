@@ -176,7 +176,7 @@ export function serializeMihomoError(error, maxDepth = MAX_ERROR_DEPTH) {
 export function mihomoErrorFields(error, prefix = "error") {
   const fields = {};
   serializeMihomoError(error).forEach((entry, index) => {
-    const root = index === 0 ? prefix : `${prefix}[${index}]`;
+    const root = index === 0 ? prefix : `cause[${index}]`;
     for (const [key, value] of Object.entries(entry)) fields[`${root}.${key}`] = value;
   });
   return fields;
