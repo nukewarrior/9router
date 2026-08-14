@@ -5,7 +5,7 @@
 - 分支：`codex/mihomo-smart-routing`
 - 基线分支：`master`
 - 基线 SHA：`15223724c3e1ad898e84ef6e0cc1686cbafc8290`
-- 开发文档：`9router-mihomo-development-plan-master-rewrite.md`
+- 开发文档：`docs/MIHOMO-EGRESS-HEALTH-POOL-DEVELOPMENT-PLAN.md`
 
 ## Current Request Flow
 
@@ -33,6 +33,8 @@ Mihomo Selector
 leaf proxy node
   ↓
 OpenCode
+
+后台维护服务并行读取 Controller 目录，按节点出口 IP 建立主备出口组，为每个“选中模型 × 独立出口”执行业务探针，并发布不可变健康 Snapshot。请求只消费健康 Snapshot，不在请求路径重新发现完整节点目录。
 ```
 
 Mihomo 路由将插入以下位置：
@@ -61,6 +63,11 @@ Mihomo 路由将插入以下位置：
 - `src/lib/network/mihomoRouteManager.js`
 - `src/lib/network/keyedMutex.js`
 - `open-sse/services/errorClassification.js`
+- `src/lib/network/mihomoHealthPool.js`
+- `src/lib/network/mihomoBusinessProbe.js`
+- `src/lib/network/mihomoMaintenanceScheduler.js`
+- `src/lib/network/mihomoMaintenanceService.js`
+- `src/lib/network/mihomoHealthAdmin.js`
 
 ### 持久化、API 与 DTO
 
@@ -70,7 +77,7 @@ Mihomo 路由将插入以下位置：
 - `src/lib/network/proxyPoolDto.js`
 - `src/app/api/proxy-pools/route.js`
 - `src/app/api/proxy-pools/[id]/route.js`
-- Mihomo test/nodes/clear-cooldown routes
+- Mihomo health/refresh/nodes/egress-probe/cooldown routes
 
 ### UI 与测试
 
@@ -106,12 +113,21 @@ body 和用户消息不会输出。排障完成后应关闭该开关并重启容
 ## 最高风险
 
 1. Controller Selector 切换后按 proxy URL 复用旧 ProxyAgent/CONNECT，会让日志节点与真实出口不一致；managed attempt 必须使用 ephemeral dispatcher。
-2. `strictProxy` 当前在 `connectionProxy.js` 已计算但未完整进入 credentials 与 `chatCore`，异常时可能 DIRECT；Mihomo 必须强制 fail-closed。
-3. OpenCode 业务 429 必须只更新 `proxyProvider + node + businessProvider` 状态，不能写 pool-level cooldown，也不能复用 account fallback 的状态。
+2. `strictProxy`、`ephemeralProxyDispatcher` 和空 `connectionNoProxy` 已作为 Mihomo managed attempt 的硬约束；Listener 故障必须 fail-closed，禁止 DIRECT。
+3. OpenCode 业务 429 只更新“模型 × 出口 identity”状态；transport failure 先更新 Node transport 并尝试同 IP 备用节点，普通 5xx 不切换出口。
+4. 后台探针使用低优先级 Selector lease，请求使用高优先级 lease；旧 Route Snapshot 的成功/失败不能覆盖更新版本的状态。
 
 ## Phase 0 验收记录
 
 - 代码基线 SHA 已与开发文档一致。
 - 工作区在创建分支前干净。
 - 文档指定的关键文件均存在并已阅读。
-- 当前执行容器没有 Node.js/npm/bun，Vitest、lint、build 需在安装 Node 依赖的环境中执行。
+- 当前实现环境使用 Node.js `v22.14.0`、npm `10.9.2`，Vitest 和 ESLint 通过仓库依赖执行。
+
+## Phase 8 迁移记录
+
+- 配置读取会忽略旧 `regionOrder`、`preferDistinctEgress`、`egressScopedCooldown`，规范化后不再输出；`samplesPerNode` 至少为 2，业务 TTL 至少为刷新周期的 2 倍。
+- v1 `mihomoState` 保留合法 Node Egress Mapping，并补齐 `mappingVersion=1`；旧的 model-less Node/business cooldown 不迁移为模型健康证据。
+- 首次升级后，旧出口映射可减少出口 IP 探针，但模型健康池从冷状态开始；后台首次 cycle 会为 Available Models 中 `providerAlias=oc` 且 `type=llm` 的模型逐步建立健康证据。
+- 重启时仅恢复未过期模型健康证据并重建 Snapshot，in-flight reservation 不持久化；删除模型或停用/删除 Pool 会清理对应 Snapshot、维护作业和持久化模型健康状态。
+- 真实环境脚本 `scripts/validate-mihomo.mjs` 只验证 Controller/Listener/出口与 Health API，不主动发起 OpenCode 请求；429、同 IP backup、不同出口 retry 和流式请求完整性按 `docs/MIHOMO-REAL-VALIDATION.md` 手动记录。
