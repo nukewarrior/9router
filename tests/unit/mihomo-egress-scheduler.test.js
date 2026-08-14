@@ -6,6 +6,7 @@ import {
 import { probeMihomoNodesEgress } from "../../src/lib/network/mihomoEgressDiscovery.js";
 import { clearMihomoNodeDirectoryCache } from "../../src/lib/network/mihomoState.js";
 import { prepareMihomoRouteAttempt } from "../../src/lib/network/mihomoRouteManager.js";
+import { rebuildHealthyMihomoSnapshot } from "../../src/lib/network/mihomoHealthPool.js";
 
 function makePool() {
   return {
@@ -20,6 +21,7 @@ function makePool() {
       egressProbeTtlMs: 60000,
     },
     mihomoState: {
+      version: 2,
       proxyProviders: {
         subscription: {
           nodes: {
@@ -102,31 +104,56 @@ describe("Mihomo egress scheduler", () => {
     expect(getMihomoEgressProbeReason({ confidence: "stable", expiresAt: 999999 }, { nowMs: 100000, ttlMs: 60000 })).toBeNull();
   });
 
-  it("enqueues maintenance without delaying route selection", async () => {
+  it("selects a prepublished healthy route without enqueuing maintenance", async () => {
     const pool = makePool();
+    pool.mihomoState.maintenance = { selectedModels: ["model-a"], nodeCount: 1, nextRunAt: 200000 };
+    pool.mihomoState.proxyProviders.subscription.nodes["Example Japan Expiring Node"].egress = {
+      ip: "198.51.100.31",
+      family: 4,
+      identityKey: "4:198.51.100.31",
+      confidence: "stable",
+      observedAt: 1,
+      expiresAt: 9999999999999,
+      mappingVersion: 1,
+    };
+    pool.mihomoState.egressIdentities["4:198.51.100.31"] = {
+      models: {
+        "model-a": {
+          status: "healthy",
+          refreshAt: new Date(200000).toISOString(),
+          expiresAt: new Date(300000).toISOString(),
+          evidenceVersion: 1,
+        },
+      },
+    };
+    rebuildHealthyMihomoSnapshot({
+      pool,
+      modelId: "model-a",
+      directory: { nodes: [{
+        key: "subscription\0Example Japan Expiring Node",
+        proxyProvider: "subscription",
+        nodeName: "Example Japan Expiring Node",
+        region: "JP",
+        alive: true,
+      }] },
+      nowMs: 100000,
+    });
     const queued = vi.fn(() => ({ queued: true }));
-    const nodes = ["JP-STALE", "JP-NEEDS", "Example Japan Expiring Node", "JP-UNKNOWN"];
-    const context = { attemptedNodeKeys: new Set(), attemptedEgressKeys: new Set(), deprioritizedRegions: new Set(), attempts: 0 };
+    const context = { attemptedEgressKeys: new Set(), attemptedNodeKeysByEgress: new Map(), attempts: 0 };
     const startedAt = Date.now();
     const result = await prepareMihomoRouteAttempt({
       poolId: pool.id,
-      businessProviderId: "opencode",
+      modelId: "model-a",
       routeContext: context,
       getPool: async () => pool,
-      makeClient: () => clientFor(nodes),
       enqueueProbe: queued,
       nowMs: 100000,
     });
 
     expect(Date.now() - startedAt).toBeLessThan(1000);
     expect(result.route).toMatchObject({ nodeName: "Example Japan Expiring Node", attemptStartedAtMs: 100000 });
-    expect(queued).toHaveBeenCalledTimes(4);
-    expect(queued.mock.calls.map(([options]) => options.reason)).toEqual([
-      "stale",
-      "needsProbe",
-      "expiring",
-      "unknown",
-    ]);
+    expect(queued).not.toHaveBeenCalled();
+    result.reservation.release();
   });
 
   it("queues a bounded batch without waiting for probe samples", async () => {

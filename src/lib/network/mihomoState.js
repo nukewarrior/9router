@@ -516,6 +516,106 @@ export function getMihomoNodeBusinessState(pool, route) {
   return getMihomoNodeTransportState(pool, route);
 }
 
+export async function markMihomoNodeEgressNeedsProbe({
+  proxyPoolId,
+  route,
+  expectedMappingVersion = null,
+  mutatePool = defaultMutateProxyPool,
+} = {}) {
+  let updated = false;
+  let stale = false;
+  const pool = await mutatePool(proxyPoolId, (current) => {
+    if (!current?.mihomo || typeof current.mihomo !== "object") return current;
+    const { nodeState } = getMutableNodeState(current, route);
+    const egress = normalizeEgressRecord(nodeState.egress);
+    const routeIdentity = getRouteIdentityKey(route);
+    if (!egress?.identityKey || (routeIdentity && egress.identityKey !== routeIdentity)) {
+      stale = true;
+      return current;
+    }
+    if (Number.isFinite(Number(expectedMappingVersion))
+      && Math.max(0, Number(egress.mappingVersion) || 0) !== Number(expectedMappingVersion)) {
+      stale = true;
+      return current;
+    }
+    nodeState.egress = { ...egress, needsProbe: true };
+    updated = true;
+    return current;
+  });
+  return { updated, stale, pool, route };
+}
+
+export async function recordMihomoNodeTransportFailure({
+  proxyPoolId,
+  route,
+  errorType = "transport",
+  error = "",
+  cooldownMs = 60000,
+  expectedMappingVersion = null,
+  mutatePool = defaultMutateProxyPool,
+  nowMs = Date.now(),
+} = {}) {
+  let updated = false;
+  let stale = false;
+  const pool = await mutatePool(proxyPoolId, (current) => {
+    if (!current?.mihomo || typeof current.mihomo !== "object") return current;
+    const { nodeState } = getMutableNodeState(current, route);
+    const currentEgress = normalizeEgressRecord(nodeState.egress);
+    if (Number.isFinite(Number(expectedMappingVersion))
+      && Math.max(0, Number(currentEgress?.mappingVersion) || 0) !== Number(expectedMappingVersion)) {
+      stale = true;
+      return current;
+    }
+    const previous = normalizeTransportRecord(nodeState.transport);
+    const duration = Math.max(0, Number(cooldownMs) || 0);
+    nodeState.transport = {
+      ...previous,
+      status: "cooling",
+      consecutiveFailures: previous.consecutiveFailures + 1,
+      cooldownUntil: duration > 0 ? new Date(nowMs + duration).toISOString() : null,
+      lastFailureAt: new Date(nowMs).toISOString(),
+      lastErrorType: text(errorType) || "transport",
+      lastError: truncateError(error) || null,
+    };
+    updated = true;
+    return current;
+  });
+  return { updated, stale, pool, route };
+}
+
+export async function recordMihomoNodeTransportSuccess({
+  proxyPoolId,
+  route,
+  expectedMappingVersion = null,
+  mutatePool = defaultMutateProxyPool,
+  nowMs = Date.now(),
+} = {}) {
+  let updated = false;
+  let stale = false;
+  const pool = await mutatePool(proxyPoolId, (current) => {
+    if (!current?.mihomo || typeof current.mihomo !== "object") return current;
+    const { nodeState } = getMutableNodeState(current, route);
+    const currentEgress = normalizeEgressRecord(nodeState.egress);
+    if (Number.isFinite(Number(expectedMappingVersion))
+      && Math.max(0, Number(currentEgress?.mappingVersion) || 0) !== Number(expectedMappingVersion)) {
+      stale = true;
+      return current;
+    }
+    nodeState.transport = {
+      ...normalizeTransportRecord(nodeState.transport),
+      status: "healthy",
+      consecutiveFailures: 0,
+      cooldownUntil: null,
+      lastSuccessAt: new Date(nowMs).toISOString(),
+      lastErrorType: null,
+      lastError: null,
+    };
+    updated = true;
+    return current;
+  });
+  return { updated, stale, pool, route };
+}
+
 function getCooldownMs(config, previousState, resetsAtMs, nowMs) {
   const reset = Number(resetsAtMs);
   if (Number.isFinite(reset) && reset > nowMs) return Math.min(reset - nowMs, config.cooldown.maxMs);
@@ -604,15 +704,6 @@ function selectMihomoBusinessScope(pool, route, modelId) {
     egress,
     state: identityKey ? getMihomoModelHealthState(pool, identityKey, modelId) : emptyMihomoModelHealthState(),
   };
-}
-
-function markMihomoAttemptEgressNeedsProbe(nodeState, route) {
-  const attemptSnapshot = getMihomoAttemptEgressSnapshot(route);
-  const currentEgress = normalizeEgressRecord(nodeState?.egress);
-  if (!attemptSnapshot?.identityKey || !currentEgress?.identityKey) return false;
-  if (attemptSnapshot.identityKey !== currentEgress.identityKey) return false;
-  nodeState.egress.needsProbe = true;
-  return true;
 }
 
 function assignMihomoFailureState(state, {
@@ -802,6 +893,18 @@ export async function recordMihomoNodeEgress({
         ...next,
         mappingVersion: currentMappingVersion + 1 || 1,
       };
+    if (next.confidence !== "unknown") {
+      const transport = normalizeTransportRecord(nodeState.transport);
+      nodeState.transport = {
+        ...transport,
+        status: "healthy",
+        consecutiveFailures: 0,
+        cooldownUntil: null,
+        lastSuccessAt: new Date(nowMs).toISOString(),
+        lastErrorType: null,
+        lastError: null,
+      };
+    }
     updated = true;
     return current;
   });
@@ -887,10 +990,6 @@ export async function recordMihomoRouteFailure({
       source: "request",
       stateStatus: "cooling",
     });
-    const { nodeState } = getMutableNodeState(current, route);
-    // Mark a mapping only when it is still the same identity observed by this
-    // attempt. A remapped node must not make an old E1 failure invalidate E2.
-    markMihomoAttemptEgressNeedsProbe(nodeState, route);
     outcome = {
       updated: true,
       cooldownMs,

@@ -33,6 +33,7 @@ function cloneNode(node) {
     key: text(node?.key) || text(node?.proxyProvider) + "\0" + text(node?.nodeName),
     proxyProvider: text(node?.proxyProvider) || "__selector__",
     nodeName: text(node?.nodeName),
+    region: text(node?.region) || "OTHER",
     alive: node?.alive === true ? true : node?.alive === false ? false : null,
     delayMs: Number.isFinite(Number(node?.delayMs)) ? Number(node.delayMs) : null,
     mappingVersion: Math.max(0, Math.floor(Number(node?.egress?.mappingVersion ?? node?.mappingVersion) || 0)),
@@ -81,7 +82,8 @@ function nodeState(state, node) {
 
 function nodeTransportCooling(transport, nowMs) {
   const cooldownUntil = finiteTime(transport?.cooldownUntil);
-  return transport?.status === "cooling" || (Number.isFinite(cooldownUntil) && cooldownUntil > nowMs);
+  if (Number.isFinite(cooldownUntil)) return cooldownUntil > nowMs;
+  return transport?.status === "cooling";
 }
 
 function directoryNodes(pool, directory) {
@@ -262,9 +264,9 @@ function removeWaiter(state, waiter) {
   if (index >= 0) state.waiters.splice(index, 1);
 }
 
-function availableEntries(snapshot, state, attemptedEgressKeys, nowMs) {
+function availableEntries(snapshot, state, attemptedEgressKeys, nowMs, preferredEgressKey = null) {
   const attempted = attemptedEgressKeys instanceof Set ? attemptedEgressKeys : new Set(attemptedEgressKeys || []);
-  return snapshot.entries.filter((entry) => {
+  const eligible = snapshot.entries.filter((entry) => {
     if (attempted.has(entry.identityKey)) return false;
     if (finiteTime(entry.expiresAt) <= nowMs) return false;
     const hasUsableNode = entry.nodes.some((node) => !nodeTransportCooling({
@@ -274,6 +276,23 @@ function availableEntries(snapshot, state, attemptedEgressKeys, nowMs) {
     if (!hasUsableNode) return false;
     return (state.inFlightStartsByEgress.get(entry.identityKey) || 0) < state.maxInFlightStartsPerEgress;
   });
+  if (!preferredEgressKey) return eligible;
+  const preferred = eligible.filter((entry) => entry.identityKey === preferredEgressKey);
+  if (preferred.length > 0) return preferred;
+
+  // Keep a valid but saturated preferred group preferred until its short
+  // admission wait ends. If the group has disappeared or is no longer
+  // usable, normal distinct-egress selection may continue.
+  const preferredExists = snapshot.entries.some((entry) => (
+    entry.identityKey === preferredEgressKey
+      && !attempted.has(entry.identityKey)
+      && finiteTime(entry.expiresAt) > nowMs
+      && entry.nodes.some((node) => !nodeTransportCooling({
+        status: node.transportStatus,
+        cooldownUntil: node.transportCooldownUntil,
+      }, nowMs))
+  ));
+  return preferredExists ? [] : eligible;
 }
 
 function snapshotHasUnattemptedEntry(snapshot, attemptedEgressKeys, nowMs) {
@@ -281,8 +300,8 @@ function snapshotHasUnattemptedEntry(snapshot, attemptedEgressKeys, nowMs) {
   return snapshot.entries.some((entry) => !attempted.has(entry.identityKey) && finiteTime(entry.expiresAt) > nowMs);
 }
 
-function chooseEntry(snapshot, state, attemptedEgressKeys, nowMs) {
-  const candidates = availableEntries(snapshot, state, attemptedEgressKeys, nowMs);
+function chooseEntry(snapshot, state, attemptedEgressKeys, nowMs, preferredEgressKey = null) {
+  const candidates = availableEntries(snapshot, state, attemptedEgressKeys, nowMs, preferredEgressKey);
   if (candidates.length === 0) return null;
   const minimum = Math.min(...candidates.map((entry) => state.inFlightStartsByEgress.get(entry.identityKey) || 0));
   const least = candidates.filter((entry) => (state.inFlightStartsByEgress.get(entry.identityKey) || 0) === minimum);
@@ -348,7 +367,13 @@ function tryReserve(state, snapshot, options) {
     1,
     Math.floor(Number(options.maxInFlightStartsPerEgress) || 1),
   );
-  const entry = chooseEntry(snapshot, state, options.attemptedEgressKeys, options.nowMs);
+  const entry = chooseEntry(
+    snapshot,
+    state,
+    options.attemptedEgressKeys,
+    options.nowMs,
+    options.preferredEgressKey,
+  );
   return entry ? createReservation(snapshot, state, entry) : null;
 }
 
@@ -429,6 +454,7 @@ export function reserveHealthyMihomoEgress({
   signal = null,
   admissionWaitMs = 3000,
   maxInFlightStartsPerEgress = 1,
+  preferredEgressKey = null,
   nowMs = Date.now(),
 } = {}) {
   const key = poolModelKey(poolId, modelId);
@@ -437,6 +463,7 @@ export function reserveHealthyMihomoEgress({
   const state = createRuntime(key);
   const options = {
     attemptedEgressKeys,
+    preferredEgressKey,
     maxInFlightStartsPerEgress,
     nowMs,
   };

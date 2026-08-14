@@ -3,9 +3,16 @@ import {
   clearMihomoRotationState,
   prepareMihomoRouteAttempt,
 } from "../../src/lib/network/mihomoRouteManager.js";
-import { clearMihomoNodeDirectoryCache } from "../../src/lib/network/mihomoState.js";
+import {
+  clearHealthyMihomoSnapshots,
+  getHealthyMihomoSnapshot,
+  rebuildHealthyMihomoSnapshot,
+} from "../../src/lib/network/mihomoHealthPool.js";
+import { createEmptyMihomoState } from "../../src/lib/network/mihomoConfig.js";
 
-function makePool(id = "pool-route") {
+const NOW = 1000;
+
+function makePool(id = "pool-route", models = ["model-a"]) {
   return {
     id,
     type: "mihomo",
@@ -14,224 +21,186 @@ function makePool(id = "pool-route") {
     mihomo: {
       controllerUrl: "http://192.0.2.10:9090",
       selectorName: "selector",
-      providerNames: ["subscription"],
       maxAttemptsPerRequest: 6,
-      syncTtlMs: 30000,
-      regionOrder: ["TW", "JP", "US", "SG", "HK", "OTHER"],
+      admissionWaitMs: 0,
+      maxInFlightStartsPerEgress: 1,
     },
-    mihomoState: { proxyProviders: {} },
+    mihomoState: {
+      ...createEmptyMihomoState(),
+      maintenance: {
+        ...createEmptyMihomoState().maintenance,
+        selectedModels: models,
+        nodeCount: 3,
+        nextRunAt: new Date(NOW + 300000).toISOString(),
+      },
+    },
   };
 }
 
-function clientFor(nodes) {
-  const proxies = Object.fromEntries(nodes.map((node) => [node.name, { type: "VLESS", alive: node.alive !== false }]));
+function setNode(pool, nodeName, identityKey, { provider = "subscription", region = "OTHER" } = {}) {
+  const [, ip] = identityKey.split(":");
+  pool.mihomoState.proxyProviders[provider] ||= { nodes: {} };
+  pool.mihomoState.proxyProviders[provider].nodes[nodeName] = {
+    egress: {
+      ip,
+      family: 4,
+      identityKey,
+      confidence: "stable",
+      observedIps: [ip, ip],
+      sampleCount: 2,
+      successfulSamples: 2,
+      observedAt: 100,
+      expiresAt: 9999999999999,
+      lastProbeAt: 100,
+      lastProbeError: null,
+      needsProbe: false,
+      mappingVersion: 1,
+    },
+    transport: {
+      status: "healthy",
+      consecutiveFailures: 0,
+      cooldownUntil: null,
+      lastSuccessAt: "1970-01-01T00:00:00.100Z",
+    },
+  };
+  pool.mihomoState.egressIdentities[identityKey] ||= { models: {} };
+  pool.mihomoState.egressIdentities[identityKey].models["model-a"] = {
+    status: "healthy",
+    refreshAt: new Date(NOW + 60000).toISOString(),
+    expiresAt: new Date(NOW + 300000).toISOString(),
+    cooldownUntil: null,
+    evidenceVersion: 3,
+    evidenceStartedAtMs: 100,
+    lastSuccessAt: new Date(100).toISOString(),
+    source: "probe",
+  };
   return {
-    getProxy: async () => ({ type: "Selector", now: nodes[0]?.name || null, all: nodes.map((node) => node.name) }),
-    getProxies: async () => ({ proxies }),
-    getProxyProvider: async () => ({ name: "subscription", type: "HTTP", proxies: nodes.map((node) => ({ name: node.name, type: "VLESS" })) }),
+    key: `${provider}\0${nodeName}`,
+    proxyProvider: provider,
+    nodeName,
+    region,
+    alive: true,
+    delayMs: 10,
   };
 }
 
-const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+function publish(pool, nodes, modelId = "model-a") {
+  rebuildHealthyMihomoSnapshot({
+    pool,
+    modelId,
+    directory: { selectorName: "selector", nodes },
+    nowMs: NOW,
+  });
+}
+
+function context() {
+  return {
+    attemptedEgressKeys: new Set(),
+    attemptedNodeKeysByEgress: new Map(),
+    attempts: 0,
+  };
+}
 
 beforeEach(() => {
   clearMihomoRotationState();
-  clearMihomoNodeDirectoryCache();
+  clearHealthyMihomoSnapshots();
 });
 
-describe("Mihomo route candidate selection", () => {
-  it("deprioritizes a rate-limited region for the remainder of one request", async () => {
+describe("Mihomo snapshot-only request routing", () => {
+  it("does not discover nodes and returns an immutable model/egress route snapshot", async () => {
+    const pool = makePool();
+    const nodes = [setNode(pool, "Node A", "4:192.0.2.20", { region: "TW" })];
+    publish(pool, nodes);
+    const makeClient = () => {
+      throw new Error("request route must not create a Mihomo client");
+    };
+    const result = await prepareMihomoRouteAttempt({
+      poolId: pool.id,
+      modelId: "model-a",
+      routeContext: context(),
+      getPool: async () => pool,
+      makeClient,
+      nowMs: NOW,
+    });
+
+    expect(result.route).toMatchObject({
+      modelId: "model-a",
+      nodeName: "Node A",
+      egressIdentityKey: "4:192.0.2.20",
+      mappingVersion: 1,
+      egressSnapshot: {
+        identityKey: "4:192.0.2.20",
+        evidenceVersion: 3,
+        scopeEligible: true,
+      },
+    });
+    expect(Object.isFrozen(result.snapshot)).toBe(true);
+    expect(Object.isFrozen(result.entry)).toBe(true);
+    expect(getHealthyMihomoSnapshot({ poolId: pool.id, modelId: "model-a" }).entries).toHaveLength(1);
+    expect(result.reservation.release()).toBe(true);
+    expect(result.reservation.release()).toBe(false);
+  });
+
+  it("uses distinct egress identities and bounds max attempts to the first snapshot", async () => {
     const pool = makePool();
     const nodes = [
-      { name: "Example Taiwan Node A" },
-      { name: "Example Taiwan Node B" },
-      { name: "Example Japan Node A" },
-      { name: "Example United States Node A" },
+      setNode(pool, "Node A", "4:192.0.2.20"),
+      setNode(pool, "Node B", "4:192.0.2.20"),
+      setNode(pool, "Node C", "4:192.0.2.21"),
     ];
-    const context = { attemptedNodeKeys: new Set(), deprioritizedRegions: new Set(), attempts: 0 };
-    const getPool = async () => pool;
-    const makeClient = () => clientFor(nodes);
+    publish(pool, nodes);
+    const routeContext = context();
+    const first = await prepareMihomoRouteAttempt({ poolId: pool.id, modelId: "model-a", routeContext, getPool: async () => pool, nowMs: NOW });
+    first.reservation.release();
+    const second = await prepareMihomoRouteAttempt({ poolId: pool.id, modelId: "model-a", routeContext, getPool: async () => pool, nowMs: NOW });
+    second.reservation.release();
+    const third = await prepareMihomoRouteAttempt({ poolId: pool.id, modelId: "model-a", routeContext, getPool: async () => pool, nowMs: NOW });
 
-    const first = await prepareMihomoRouteAttempt({ poolId: pool.id, businessProviderId: "opencode", routeContext: context, getPool, makeClient, nowMs: 100 });
-    context.deprioritizedRegions.add(first.route.region);
-    const second = await prepareMihomoRouteAttempt({ poolId: pool.id, businessProviderId: "opencode", routeContext: context, getPool, makeClient, nowMs: 200 });
-    expect(first.route.region).toBe("TW");
-    expect(second.route.region).toBe("JP");
-    expect(second.route.nodeName).toBe("Example Japan Node A");
-    expect(first.route.requestId).toBe(context.requestId);
-    expect(second.route.requestId).toBe(first.route.requestId);
-    expect(second.route.routeId).toBe(first.route.routeId);
+    expect(first.route.egressIdentityKey).not.toBe(second.route.egressIdentityKey);
+    expect(routeContext.maxAttempts).toBe(2);
+    expect(third.route).toBeNull();
   });
 
-  it("allows a deprioritized region only when other regions have no eligible nodes", async () => {
-    const pool = makePool("pool-fallback-region");
-    pool.mihomoState.proxyProviders.subscription = {
-      nodes: { "Example Japan Node A": { business: { opencode: { cooldownUntil: new Date(9999999999999).toISOString(), backoffLevel: 1 } } } },
-    };
-    const nodes = [{ name: "Example Taiwan Node A" }, { name: "Example Taiwan Node B" }, { name: "Example Japan Node A" }];
-    const context = {
-      attemptedNodeKeys: new Set(["subscription\0Example Taiwan Node A"]),
-      deprioritizedRegions: new Set(["TW"]),
-      attempts: 1,
-      maxAttempts: 3,
-    };
-    const result = await prepareMihomoRouteAttempt({ poolId: pool.id, businessProviderId: "opencode", routeContext: context, getPool: async () => pool, makeClient: () => clientFor(nodes), nowMs: 100 });
-    expect(result.route).toMatchObject({ nodeName: "Example Taiwan Node B", region: "TW" });
-  });
+  it("fails closed for unmanaged, warming, empty-node, and all-cooling states", async () => {
+    const unmanaged = makePool("unmanaged", ["other-model"]);
+    await expect(prepareMihomoRouteAttempt({
+      poolId: unmanaged.id,
+      modelId: "model-a",
+      routeContext: context(),
+      getPool: async () => unmanaged,
+      nowMs: NOW,
+    })).rejects.toMatchObject({ code: "MIHOMO_MODEL_NOT_MANAGED", status: 503 });
 
-  it("never repeats a node and enforces max attempts", async () => {
-    const pool = makePool("pool-max");
-    const nodes = Array.from({ length: 8 }, (_, index) => ({ name: `JP-A${String(index).padStart(2, "0")}` }));
-    const context = { attemptedNodeKeys: new Set(), deprioritizedRegions: new Set(), attempts: 0 };
-    const routes = [];
-    for (let index = 0; index < 7; index += 1) {
-      const prepared = await prepareMihomoRouteAttempt({ poolId: pool.id, businessProviderId: "opencode", routeContext: context, getPool: async () => pool, makeClient: () => clientFor(nodes), nowMs: 100 + index });
-      if (prepared.route) routes.push(prepared.route.nodeName);
-    }
-    expect(routes).toHaveLength(6);
-    expect(new Set(routes).size).toBe(6);
-    expect(context.attempts).toBe(6);
-  });
+    const warming = makePool("warming");
+    await expect(prepareMihomoRouteAttempt({
+      poolId: warming.id,
+      modelId: "model-a",
+      routeContext: context(),
+      getPool: async () => warming,
+      nowMs: NOW,
+    })).rejects.toMatchObject({ code: "MIHOMO_POOL_WARMING", status: 503 });
 
-  it("uses a process-local node cursor across fresh requests", async () => {
-    const pool = makePool("pool-fairness");
-    const nodes = [{ name: "Example Japan Node A" }, { name: "Example Japan Node B" }];
-    const firstContext = { attemptedNodeKeys: new Set(), deprioritizedRegions: new Set(), attempts: 0 };
-    const secondContext = { attemptedNodeKeys: new Set(), deprioritizedRegions: new Set(), attempts: 0 };
-    const options = { poolId: pool.id, businessProviderId: "opencode", getPool: async () => pool, makeClient: () => clientFor(nodes) };
-    const first = await prepareMihomoRouteAttempt({ ...options, routeContext: firstContext, nowMs: 100 });
-    await tick();
-    const second = await prepareMihomoRouteAttempt({ ...options, routeContext: secondContext, nowMs: 200 });
-    expect(second.route.nodeName).not.toBe(first.route.nodeName);
-  });
+    const empty = makePool("empty");
+    empty.mihomoState.maintenance.nodeCount = 0;
+    await expect(prepareMihomoRouteAttempt({
+      poolId: empty.id,
+      modelId: "model-a",
+      routeContext: context(),
+      getPool: async () => empty,
+      nowMs: NOW,
+    })).rejects.toMatchObject({ code: "MIHOMO_NO_ELIGIBLE_NODES", status: 503 });
 
-  it("keeps regionOrder as priority across fresh requests", async () => {
-    const pool = makePool("pool-region-priority");
-    const nodes = [{ name: "Example Taiwan Node A" }, { name: "Example Taiwan Node B" }, { name: "Example Japan Node A" }];
-    const options = {
-      poolId: pool.id,
-      businessProviderId: "opencode",
-      getPool: async () => pool,
-      makeClient: () => clientFor(nodes),
-    };
-    const firstContext = { attemptedNodeKeys: new Set(), deprioritizedRegions: new Set(), attempts: 0 };
-    const secondContext = { attemptedNodeKeys: new Set(), deprioritizedRegions: new Set(), attempts: 0 };
-
-    const first = await prepareMihomoRouteAttempt({ ...options, routeContext: firstContext, nowMs: 100 });
-    const second = await prepareMihomoRouteAttempt({ ...options, routeContext: secondContext, nowMs: 200 });
-
-    expect(first.route.region).toBe("TW");
-    expect(second.route.region).toBe("TW");
-    expect(second.route.nodeName).not.toBe(first.route.nodeName);
-  });
-
-  it("keeps node routing unchanged while exposing a distinct-egress shadow candidate", async () => {
-    const pool = makePool("pool-shadow");
-    const nodes = [{ name: "Example Japan Node A" }, { name: "Example Japan Node B" }];
-    pool.mihomoState.proxyProviders.subscription = {
-      nodes: {
-        "Example Japan Node A": { egress: { ip: "192.0.2.21", family: 4, identityKey: "4:192.0.2.21", confidence: "stable", expiresAt: 9999999999999 } },
-        "Example Japan Node B": { egress: { ip: "192.0.2.20", family: 4, identityKey: "4:192.0.2.20", confidence: "stable", expiresAt: 9999999999999 } },
-      },
-    };
-    const context = { attemptedNodeKeys: new Set(), deprioritizedRegions: new Set(), attempts: 0 };
-    const result = await prepareMihomoRouteAttempt({
-      poolId: pool.id,
-      businessProviderId: "opencode",
-      routeContext: context,
-      getPool: async () => pool,
-      makeClient: () => clientFor(nodes),
-      nowMs: 100,
-    });
-
-    expect(result.route.nodeName).toBe("Example Japan Node A");
-    expect(result.route.egressIdentityKey).toBe("4:192.0.2.21");
-    expect(result.shadowRoute).toMatchObject({ nodeName: "Example Japan Node B", egressIdentityKey: "4:192.0.2.20" });
-    expect(context.attemptedEgressKeys).toEqual(new Set());
-  });
-
-  it("freezes the stable/fresh egress scope decision at attempt start", async () => {
-    const pool = makePool("pool-attempt-snapshot");
-    pool.mihomo.egressScopedCooldown = true;
-    pool.mihomoState.proxyProviders.subscription = {
-      nodes: {
-        "Example Japan Node A": {
-          egress: {
-            ip: "192.0.2.21",
-            family: 4,
-            identityKey: "4:192.0.2.21",
-            confidence: "stable",
-            observedAt: 50,
-            expiresAt: 1000,
-          },
-        },
-      },
-    };
-    const context = { attemptedNodeKeys: new Set(), deprioritizedRegions: new Set(), attempts: 0 };
-    const result = await prepareMihomoRouteAttempt({
-      poolId: pool.id,
-      businessProviderId: "opencode",
-      routeContext: context,
-      getPool: async () => pool,
-      makeClient: () => clientFor([{ name: "Example Japan Node A" }]),
-      nowMs: 100,
-    });
-
-    expect(result.route.egressSnapshot).toEqual({
-      startedAtMs: 100,
-      identityKey: "4:192.0.2.21",
-      confidence: "stable",
-      observedAt: 50,
-      expiresAt: 1000,
-      scopeEligible: true,
-    });
-    expect(Object.isFrozen(result.route.egressSnapshot)).toBe(true);
-
-    pool.mihomoState.proxyProviders.subscription.nodes["Example Japan Node A"].egress = {
-      ip: "203.0.113.31",
-      family: 4,
-      identityKey: "4:203.0.113.31",
-      confidence: "stable",
-      observedAt: 101,
-      expiresAt: 2000,
-    };
-    expect(result.route.egressSnapshot.identityKey).toBe("4:192.0.2.21");
-    expect(result.route.egressSnapshot.scopeEligible).toBe(true);
-  });
-
-  it.each([
-    ["tentative", { confidence: "tentative", expiresAt: 1000 }, true],
-    ["stale", { confidence: "stable", expiresAt: 99 }, true],
-    ["feature-disabled", { confidence: "stable", expiresAt: 1000 }, false],
-  ])("does not make a %s mapping eligible for egress scope", async (_caseName, egress, egressScopedCooldown) => {
-    const pool = makePool(`pool-attempt-snapshot-${_caseName}`);
-    pool.mihomo.egressScopedCooldown = egressScopedCooldown;
-    pool.mihomoState.proxyProviders.subscription = {
-      nodes: {
-        "Example Japan Node A": {
-          egress: {
-            ip: "192.0.2.21",
-            family: 4,
-            identityKey: "4:192.0.2.21",
-            observedAt: 50,
-            ...egress,
-          },
-        },
-      },
-    };
-    const result = await prepareMihomoRouteAttempt({
-      poolId: pool.id,
-      businessProviderId: "opencode",
-      routeContext: { attemptedNodeKeys: new Set(), deprioritizedRegions: new Set(), attempts: 0 },
-      getPool: async () => pool,
-      makeClient: () => clientFor([{ name: "Example Japan Node A" }]),
-      nowMs: 100,
-    });
-
-    expect(result.route.egressSnapshot).toMatchObject({
-      identityKey: "4:192.0.2.21",
-      confidence: egress.confidence,
-      scopeEligible: false,
-    });
+    const cooling = makePool("cooling");
+    const node = setNode(cooling, "Node A", "4:192.0.2.20");
+    cooling.mihomoState.egressIdentities["4:192.0.2.20"].models["model-a"].status = "cooling";
+    cooling.mihomoState.egressIdentities["4:192.0.2.20"].models["model-a"].cooldownUntil = new Date(NOW + 30000).toISOString();
+    publish(cooling, [node]);
+    await expect(prepareMihomoRouteAttempt({
+      poolId: cooling.id,
+      modelId: "model-a",
+      routeContext: context(),
+      getPool: async () => cooling,
+      nowMs: NOW,
+    })).rejects.toMatchObject({ code: "MIHOMO_POOL_RATE_LIMITED", status: 429 });
   });
 });

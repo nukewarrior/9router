@@ -1,18 +1,19 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   clearMihomoEgressCooldown,
-  getMihomoEgressBusinessState,
-  getMihomoNodeBusinessState,
+  getMihomoModelHealthState,
+  getMihomoNodeTransportState,
+  markMihomoNodeEgressNeedsProbe,
+  recordMihomoNodeTransportFailure,
+  recordMihomoNodeTransportSuccess,
   recordMihomoRouteFailure,
   recordMihomoRouteSuccess,
 } from "../../src/lib/network/mihomoState.js";
-import {
-  clearMihomoRotationState,
-  prepareMihomoRouteAttempt,
-} from "../../src/lib/network/mihomoRouteManager.js";
-import { clearMihomoNodeDirectoryCache } from "../../src/lib/network/mihomoState.js";
+import { createEmptyMihomoState } from "../../src/lib/network/mihomoConfig.js";
 
 function makePool() {
+  const state = createEmptyMihomoState();
+  state.maintenance.selectedModels = ["model-a", "model-b"];
   return {
     id: "egress-cooldown",
     type: "mihomo",
@@ -21,229 +22,183 @@ function makePool() {
     mihomo: {
       controllerUrl: "http://192.0.2.10:9090",
       selectorName: "selector",
-      providerNames: ["subscription"],
-      egressScopedCooldown: true,
-      preferDistinctEgress: true,
-      cooldown: { baseMs: 300000, multiplier: 3, maxMs: 1800000 },
     },
-    mihomoState: { proxyProviders: {}, egressIdentities: {} },
+    mihomoState: state,
   };
 }
 
-function stableEgress(identityKey, expiresAt = 9999999999999, confidence = "stable") {
-  return {
-    ip: identityKey.slice(2),
-    family: identityKey.startsWith("6:") ? 6 : 4,
-    identityKey,
-    confidence,
-    sampleCount: 2,
-    successfulSamples: 2,
-    observedAt: 100,
-    expiresAt,
-    lastProbeAt: 100,
-    lastProbeError: null,
-  };
-}
-
-function setNode(pool, nodeName, egress) {
+function setNode(pool, nodeName, identityKey = "4:198.51.100.20", mappingVersion = 1) {
   pool.mihomoState.proxyProviders.subscription ||= { nodes: {} };
-  pool.mihomoState.proxyProviders.subscription.nodes[nodeName] = { egress };
-}
-
-function routeFor(identityKey = "4:198.51.100.20", { scopeEligible = true, startedAtMs = 1000, confidence = "stable" } = {}) {
-  return {
-    proxyProvider: "subscription",
-    nodeName: "Example Taiwan Node A",
-    attemptStartedAtMs: startedAtMs,
-    egressSnapshot: {
-      startedAtMs,
+  pool.mihomoState.proxyProviders.subscription.nodes[nodeName] = {
+    egress: {
+      ip: identityKey.slice(2),
+      family: 4,
       identityKey,
-      confidence,
+      confidence: "stable",
+      sampleCount: 2,
+      successfulSamples: 2,
       observedAt: 100,
       expiresAt: 9999999999999,
-      scopeEligible,
+      mappingVersion,
     },
   };
 }
 
-function mutatorFor(pool, writes = null) {
-  return async (_id, mutator) => {
-    if (writes) writes.count += 1;
-    return mutator(pool);
-  };
-}
-
-function makeClient(nodes) {
+function route(identityKey = "4:198.51.100.20", modelId = "model-a", nodeName = "Node A", attemptStartedAtMs = 1000) {
   return {
-    getProxy: async () => ({ type: "Selector", now: nodes[0], all: nodes }),
-    getProxies: async () => ({ proxies: Object.fromEntries(nodes.map((node) => [node, { type: "VLESS", alive: true }])) }),
-    getProxyProvider: async () => ({ proxies: nodes.map((name) => ({ name, type: "VLESS" })) }),
+    modelId,
+    proxyProvider: "subscription",
+    nodeName,
+    egressIdentityKey: identityKey,
+    mappingVersion: 1,
+    attemptStartedAtMs,
+    egressSnapshot: {
+      identityKey,
+      confidence: "stable",
+      observedAt: 100,
+      expiresAt: 9999999999999,
+      scopeEligible: true,
+    },
   };
 }
 
-beforeEach(() => {
-  clearMihomoRotationState();
-  clearMihomoNodeDirectoryCache();
-});
+function mutatePool(pool) {
+  return async (_id, mutator) => mutator(pool);
+}
 
-describe("Mihomo egress-scoped business cooldown", () => {
-  it("writes stable/fresh rate limits to identity/provider state", async () => {
+beforeEach(() => {});
+
+describe("Mihomo model×egress cooldown and node transport state", () => {
+  it("writes a 429 cooldown only to the current model and egress identity", async () => {
     const pool = makePool();
-    setNode(pool, "Example Taiwan Node A", stableEgress("4:198.51.100.20"));
-    const route = routeFor();
+    setNode(pool, "Node A");
     const result = await recordMihomoRouteFailure({
       proxyPoolId: pool.id,
-      route,
-      businessProviderId: "opencode",
+      route: route(),
+      modelId: "model-a",
       status: 429,
       error: "rate limit",
-      mutatePool: mutatorFor(pool),
+      mutatePool: mutatePool(pool),
       nowMs: 1000,
     });
 
-    expect(result).toMatchObject({ updated: true, scope: "egress", identityKey: "4:198.51.100.20", cooldownMs: 300000 });
-    expect(getMihomoEgressBusinessState(pool, "4:198.51.100.20", "opencode")).toMatchObject({ backoffLevel: 1, lastStatus: 429 });
-    expect(getMihomoNodeBusinessState(pool, route, "opencode").cooldownUntil).toBeNull();
+    expect(result).toMatchObject({ updated: true, scope: "egress", identityKey: "4:198.51.100.20", modelId: "model-a" });
+    expect(getMihomoModelHealthState(pool, "4:198.51.100.20", "model-a")).toMatchObject({
+      status: "cooling",
+      backoffLevel: 1,
+      lastStatus: 429,
+    });
+    expect(getMihomoModelHealthState(pool, "4:198.51.100.20", "model-b").status).toBe("unknown");
   });
 
-  it("keeps node-scoped semantics when the egress cooldown flag is disabled", async () => {
+  it("does not write model×egress state for ordinary upstream failures", async () => {
     const pool = makePool();
-    pool.mihomo.egressScopedCooldown = false;
-    setNode(pool, "Example Taiwan Node A", stableEgress("4:198.51.100.20"));
-    const route = routeFor();
+    setNode(pool, "Node A");
     const result = await recordMihomoRouteFailure({
       proxyPoolId: pool.id,
-      route,
-      businessProviderId: "opencode",
-      status: 429,
-      error: "rate limit",
-      mutatePool: mutatorFor(pool),
-      nowMs: 1000,
-    });
-    expect(result.scope).toBe("node");
-    expect(getMihomoNodeBusinessState(pool, route, "opencode").backoffLevel).toBe(1);
-    expect(pool.mihomoState.egressIdentities).toEqual({});
-  });
-
-  it("excludes all same-IP siblings while keeping another IP available", async () => {
-    const pool = makePool();
-    const nodes = ["Example Taiwan Node A", "Example Taiwan Node B", "Example Taiwan Node C"];
-    setNode(pool, "Example Taiwan Node A", stableEgress("4:198.51.100.20"));
-    setNode(pool, "Example Taiwan Node B", stableEgress("4:198.51.100.20"));
-    setNode(pool, "Example Taiwan Node C", stableEgress("4:203.0.113.30"));
-    pool.mihomoState.egressIdentities["4:198.51.100.20"] = {
-      business: { opencode: { cooldownUntil: new Date(9999999999999).toISOString(), backoffLevel: 1 } },
-    };
-    const context = { attemptedNodeKeys: new Set(), attemptedEgressKeys: new Set(), deprioritizedRegions: new Set(), attempts: 0 };
-    const result = await prepareMihomoRouteAttempt({
-      poolId: pool.id,
-      businessProviderId: "opencode",
-      routeContext: context,
-      getPool: async () => pool,
-      makeClient: () => makeClient(nodes),
-      nowMs: 1000,
-    });
-
-    expect(result.route).toMatchObject({ nodeName: "Example Taiwan Node C", egressIdentityKey: "4:203.0.113.30" });
-  });
-
-  it("isolates cooldown by business provider", async () => {
-    const pool = makePool();
-    const nodes = ["Example Taiwan Node A", "Example Taiwan Node C"];
-    setNode(pool, "Example Taiwan Node A", stableEgress("4:198.51.100.20"));
-    setNode(pool, "Example Taiwan Node C", stableEgress("4:203.0.113.30"));
-    pool.mihomoState.egressIdentities["4:198.51.100.20"] = {
-      business: { opencode: { cooldownUntil: new Date(9999999999999).toISOString() } },
-    };
-    const result = await prepareMihomoRouteAttempt({
-      poolId: pool.id,
-      businessProviderId: "gemini",
-      routeContext: { attemptedNodeKeys: new Set(), attemptedEgressKeys: new Set(["4:203.0.113.30"]), deprioritizedRegions: new Set(), attempts: 0 },
-      getPool: async () => pool,
-      makeClient: () => makeClient(nodes),
-      nowMs: 1000,
-    });
-    expect(result.route.nodeName).toBe("Example Taiwan Node A");
-  });
-
-  it("falls back to node cooldown for stale, dynamic and unknown mappings", async () => {
-    for (const egress of [
-      stableEgress("4:192.0.2.20", 999),
-      { ...stableEgress("4:192.0.2.20"), confidence: "dynamic" },
-      null,
-    ]) {
-      const pool = makePool();
-      setNode(pool, "Example Taiwan Node A", egress);
-      const route = routeFor(egress?.identityKey || null, {
-        scopeEligible: false,
-        confidence: egress?.confidence || "unknown",
-      });
-      const result = await recordMihomoRouteFailure({
-        proxyPoolId: pool.id,
-        route,
-        businessProviderId: "opencode",
-        status: 500,
-        error: "FreeUsageLimitError",
-        mutatePool: mutatorFor(pool),
-        nowMs: 1000,
-      });
-      expect(result.scope).toBe("node");
-      expect(getMihomoNodeBusinessState(pool, route, "opencode").cooldownUntil).toBe("1970-01-01T00:05:01.000Z");
-      expect(getMihomoEgressBusinessState(pool, "4:192.0.2.20", "opencode").cooldownUntil).toBeNull();
-      if (egress) expect(pool.mihomoState.proxyProviders.subscription.nodes["Example Taiwan Node A"].egress.needsProbe).toBe(true);
-    }
-  });
-
-  it("does not create egress cooldown for generic failures, and resets egress backoff on success", async () => {
-    const pool = makePool();
-    setNode(pool, "Example Taiwan Node A", stableEgress("4:198.51.100.20"));
-    const route = routeFor();
-    const generic = await recordMihomoRouteFailure({
-      proxyPoolId: pool.id,
-      route,
-      businessProviderId: "opencode",
+      route: route(),
+      modelId: "model-a",
       status: 500,
-      error: "upstream unavailable",
-      mutatePool: mutatorFor(pool),
+      error: "provider overloaded",
+      mutatePool: mutatePool(pool),
+    });
+
+    expect(result.updated).toBe(false);
+    expect(pool.mihomoState.egressIdentities).toEqual({});
+  });
+
+  it("records transport cooling per node and ignores stale mapping results", async () => {
+    const pool = makePool();
+    setNode(pool, "Node A");
+    const currentRoute = route();
+    const failure = await recordMihomoNodeTransportFailure({
+      proxyPoolId: pool.id,
+      route: currentRoute,
+      expectedMappingVersion: 1,
+      errorType: "transport",
+      error: "fetch failed",
+      mutatePool: mutatePool(pool),
       nowMs: 1000,
     });
-    expect(generic.updated).toBe(false);
-    expect(pool.mihomoState.egressIdentities).toEqual({});
+    expect(failure).toMatchObject({ updated: true, stale: false });
+    expect(getMihomoNodeTransportState(pool, currentRoute)).toMatchObject({
+      status: "cooling",
+      consecutiveFailures: 1,
+      lastError: "fetch failed",
+    });
 
-    await recordMihomoRouteFailure({ proxyPoolId: pool.id, route, businessProviderId: "opencode", status: 429, error: "429", mutatePool: mutatorFor(pool), nowMs: 1000 });
-    const second = await recordMihomoRouteFailure({ proxyPoolId: pool.id, route, businessProviderId: "opencode", status: 429, error: "429", mutatePool: mutatorFor(pool), nowMs: 1000 });
-    expect(second.cooldownMs).toBe(900000);
-    const success = await recordMihomoRouteSuccess({ proxyPoolId: pool.id, route, businessProviderId: "opencode", mutatePool: mutatorFor(pool), nowMs: 2000 });
-    expect(success).toMatchObject({ updated: true, scope: "egress", identityKey: "4:198.51.100.20" });
-    expect(getMihomoEgressBusinessState(pool, "4:198.51.100.20", "opencode")).toMatchObject({ cooldownUntil: null, backoffLevel: 0, lastSuccessAt: "1970-01-01T00:00:02.000Z" });
+    pool.mihomoState.proxyProviders.subscription.nodes["Node A"].egress.mappingVersion = 2;
+    const stale = await recordMihomoNodeTransportFailure({
+      proxyPoolId: pool.id,
+      route: currentRoute,
+      expectedMappingVersion: 1,
+      error: "old mapping failed",
+      mutatePool: mutatePool(pool),
+      nowMs: 2000,
+    });
+    expect(stale).toMatchObject({ updated: false, stale: true });
+    expect(getMihomoNodeTransportState(pool, currentRoute).lastError).toBe("fetch failed");
   });
 
-  it("limits clean success writes to once per minute", async () => {
+  it("marks a transport-exhausted mapping for background probing with a version guard", async () => {
     const pool = makePool();
-    setNode(pool, "Example Taiwan Node A", stableEgress("4:198.51.100.20"));
-    const writes = { count: 0 };
-    const mutatePool = mutatorFor(pool, writes);
-    const getPool = async () => pool;
-    const route = routeFor();
+    setNode(pool, "Node A");
+    const currentRoute = route();
+    const marked = await markMihomoNodeEgressNeedsProbe({
+      proxyPoolId: pool.id,
+      route: currentRoute,
+      expectedMappingVersion: 1,
+      mutatePool: mutatePool(pool),
+    });
+    expect(marked).toMatchObject({ updated: true, stale: false });
+    expect(pool.mihomoState.proxyProviders.subscription.nodes["Node A"].egress.needsProbe).toBe(true);
 
-    await recordMihomoRouteSuccess({ proxyPoolId: pool.id, route, businessProviderId: "opencode", mutatePool, getPool, nowMs: 1000 });
-    await recordMihomoRouteSuccess({ proxyPoolId: pool.id, route, businessProviderId: "opencode", mutatePool, getPool, nowMs: 2000 });
-    await recordMihomoRouteSuccess({ proxyPoolId: pool.id, route, businessProviderId: "opencode", mutatePool, getPool, nowMs: 62001 });
-    expect(writes.count).toBe(2);
+    pool.mihomoState.proxyProviders.subscription.nodes["Node A"].egress.mappingVersion = 2;
+    pool.mihomoState.proxyProviders.subscription.nodes["Node A"].egress.needsProbe = false;
+    const stale = await markMihomoNodeEgressNeedsProbe({
+      proxyPoolId: pool.id,
+      route: currentRoute,
+      expectedMappingVersion: 1,
+      mutatePool: mutatePool(pool),
+    });
+    expect(stale).toMatchObject({ updated: false, stale: true });
+    expect(pool.mihomoState.proxyProviders.subscription.nodes["Node A"].egress.needsProbe).toBe(false);
   });
 
-  it("manually clears one identity/provider cooldown", async () => {
+  it("records successful model route evidence and clears only that model cooldown", async () => {
     const pool = makePool();
-    pool.mihomoState.egressIdentities["4:198.51.100.20"] = {
-      business: { opencode: { cooldownUntil: new Date(9999999999999).toISOString(), backoffLevel: 4, lastError: "429" } },
-    };
-    const result = await clearMihomoEgressCooldown({
+    setNode(pool, "Node A");
+    const currentRoute = route();
+    await recordMihomoRouteFailure({
+      proxyPoolId: pool.id,
+      route: currentRoute,
+      modelId: "model-a",
+      status: 429,
+      error: "rate limit",
+      mutatePool: mutatePool(pool),
+      nowMs: 1000,
+    });
+    const success = await recordMihomoRouteSuccess({
+      proxyPoolId: pool.id,
+      route: currentRoute,
+      modelId: "model-a",
+      mutatePool: mutatePool(pool),
+      nowMs: 2000,
+    });
+    expect(success).toMatchObject({ updated: true, scope: "egress", modelId: "model-a" });
+    expect(getMihomoModelHealthState(pool, "4:198.51.100.20", "model-a")).toMatchObject({
+      status: "healthy",
+      cooldownUntil: null,
+      backoffLevel: 0,
+      lastSuccessAt: "1970-01-01T00:00:02.000Z",
+    });
+
+    const cleared = await clearMihomoEgressCooldown({
       proxyPoolId: pool.id,
       identityKey: "4:198.51.100.20",
-      businessProviderId: "opencode",
-      mutatePool: mutatorFor(pool),
+      modelId: "model-a",
+      mutatePool: mutatePool(pool),
     });
-    expect(result.updated).toBe(true);
-    expect(getMihomoEgressBusinessState(pool, "4:198.51.100.20", "opencode")).toMatchObject({ cooldownUntil: null, backoffLevel: 0, lastError: null });
+    expect(cleared).toMatchObject({ updated: true, modelId: "model-a" });
   });
 });

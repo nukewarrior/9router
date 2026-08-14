@@ -5,9 +5,18 @@ import {
   groupMihomoNodesByEgress,
   prepareMihomoRouteAttempt,
 } from "../../src/lib/network/mihomoRouteManager.js";
-import { clearMihomoNodeDirectoryCache } from "../../src/lib/network/mihomoState.js";
+import {
+  clearHealthyMihomoSnapshots,
+  rebuildHealthyMihomoSnapshot,
+} from "../../src/lib/network/mihomoHealthPool.js";
+import { createEmptyMihomoState } from "../../src/lib/network/mihomoConfig.js";
+
+const NOW = 1000;
 
 function makePool(id = "egress-route") {
+  const state = createEmptyMihomoState();
+  state.maintenance.selectedModels = ["model-a"];
+  state.maintenance.nodeCount = 2;
   return {
     id,
     type: "mihomo",
@@ -16,219 +25,156 @@ function makePool(id = "egress-route") {
     mihomo: {
       controllerUrl: "http://192.0.2.10:9090",
       selectorName: "selector",
-      providerNames: ["sub-a", "sub-b"],
-      preferDistinctEgress: true,
-      egressScopedCooldown: false,
-      maxAttemptsPerRequest: 6,
-      regionOrder: ["TW", "JP", "US", "SG", "HK", "OTHER"],
+      maxAttemptsPerRequest: 4,
+      admissionWaitMs: 0,
     },
-    mihomoState: { proxyProviders: {}, egressIdentities: {} },
+    mihomoState: state,
   };
 }
 
-function makeClient(nodes, providers = {}) {
-  const proxies = Object.fromEntries(nodes.map((node) => [node.name, { type: "VLESS", alive: true }]));
-  return {
-    getProxy: async () => ({ type: "Selector", now: nodes[0]?.name || null, all: nodes.map((node) => node.name) }),
-    getProxies: async () => ({ proxies }),
-    getProxyProvider: async (providerName) => ({
-      name: providerName,
-      type: "HTTP",
-      proxies: (providers[providerName] || []).map((name) => ({ name, type: "VLESS" })),
-    }),
-  };
-}
-
-function setEgress(pool, provider, nodeName, identityKey, { confidence = "stable", expiresAt = 9999999999999 } = {}) {
-  const [, ip] = identityKey.split(":");
-  const family = identityKey.startsWith("6:") ? 6 : 4;
+function addNode(pool, nodeName, identityKey, provider = "sub-a") {
+  const ip = identityKey.slice(2);
   pool.mihomoState.proxyProviders[provider] ||= { nodes: {} };
   pool.mihomoState.proxyProviders[provider].nodes[nodeName] = {
     egress: {
       ip,
-      family,
+      family: 4,
       identityKey,
-      confidence,
-      sampleCount: confidence === "unknown" ? 0 : 2,
-      successfulSamples: confidence === "unknown" ? 0 : 2,
+      confidence: "stable",
+      sampleCount: 2,
+      successfulSamples: 2,
       observedAt: 100,
-      expiresAt,
+      expiresAt: 9999999999999,
       lastProbeAt: 100,
       lastProbeError: null,
+      needsProbe: false,
+      mappingVersion: 1,
     },
+    transport: { status: "healthy", consecutiveFailures: 0 },
+  };
+  pool.mihomoState.egressIdentities[identityKey] ||= { models: {} };
+  pool.mihomoState.egressIdentities[identityKey].models["model-a"] = {
+    status: "healthy",
+    refreshAt: new Date(NOW + 60000).toISOString(),
+    expiresAt: new Date(NOW + 300000).toISOString(),
+    cooldownUntil: null,
+    evidenceVersion: 2,
+    evidenceStartedAtMs: 100,
+    lastSuccessAt: new Date(100).toISOString(),
+    source: "probe",
+  };
+  return {
+    key: `${provider}\0${nodeName}`,
+    proxyProvider: provider,
+    nodeName,
+    region: "OTHER",
+    alive: true,
+    delayMs: 10,
   };
 }
 
-async function prepare(pool, nodes, context = {}) {
-  return prepareMihomoRouteAttempt({
-    poolId: pool.id,
-    businessProviderId: "opencode",
-    routeContext: {
-      attemptedNodeKeys: new Set(),
-      attemptedEgressKeys: new Set(),
-      deprioritizedRegions: new Set(),
-      attempts: 0,
-      ...context,
-    },
-    getPool: async () => pool,
-    makeClient: () => makeClient(nodes, {
-      "sub-a": nodes.filter((node) => node.provider === "sub-a").map((node) => node.name),
-      "sub-b": nodes.filter((node) => node.provider === "sub-b").map((node) => node.name),
-    }),
-    nowMs: 1000,
+function context() {
+  return {
+    attemptedEgressKeys: new Set(),
+    attemptedNodeKeysByEgress: new Map(),
+    attempts: 0,
+  };
+}
+
+function publish(pool, nodes) {
+  return rebuildHealthyMihomoSnapshot({
+    pool,
+    modelId: "model-a",
+    directory: { selectorName: "selector", nodes },
+    nowMs: NOW,
   });
 }
 
 beforeEach(() => {
   clearMihomoRotationState();
-  clearMihomoNodeDirectoryCache();
+  clearHealthyMihomoSnapshots();
 });
 
-describe("Mihomo egress-aware scheduling", () => {
-  it("groups same-IP nodes, including nodes from different providers", () => {
+describe("Mihomo egress snapshot routing", () => {
+  it("groups stable same-IP nodes and keeps unknown mappings node-scoped", () => {
     const nodes = [
-      { key: "sub-a\0Example Taiwan Node A", nodeName: "Example Taiwan Node A", proxyProvider: "sub-a", region: "TW", egress: { ip: "192.0.2.20", family: 4, confidence: "stable", identityKey: "4:192.0.2.20", expiresAt: 9999 } },
-      { key: "sub-b\0Example Taiwan Node B", nodeName: "Example Taiwan Node B", proxyProvider: "sub-b", region: "TW", egress: { ip: "192.0.2.20", family: 4, confidence: "stable", identityKey: "4:192.0.2.20", expiresAt: 9999 } },
-      { key: "sub-a\0Example Taiwan Node C", nodeName: "Example Taiwan Node C", proxyProvider: "sub-a", region: "TW", egress: { ip: "192.0.2.21", family: 4, confidence: "stable", identityKey: "4:192.0.2.21", expiresAt: 9999 } },
+      {
+        key: "sub-a\0Node A",
+        nodeName: "Node A",
+        proxyProvider: "sub-a",
+        egress: { ip: "192.0.2.20", family: 4, confidence: "stable", identityKey: "4:192.0.2.20", expiresAt: 9999 },
+      },
+      {
+        key: "sub-b\0Node B",
+        nodeName: "Node B",
+        proxyProvider: "sub-b",
+        egress: { ip: "192.0.2.20", family: 4, confidence: "stable", identityKey: "4:192.0.2.20", expiresAt: 9999 },
+      },
+      {
+        key: "sub-a\0Node C",
+        nodeName: "Node C",
+        proxyProvider: "sub-a",
+        egress: null,
+      },
     ];
-    const groups = groupMihomoNodesByEgress(nodes, 1000);
-    expect(groups.get("4:192.0.2.20").map((node) => node.nodeName)).toEqual(["Example Taiwan Node A", "Example Taiwan Node B"]);
-    expect(groups.size).toBe(2);
+    const groups = groupMihomoNodesByEgress(nodes, NOW);
+    expect(groups.get("4:192.0.2.20").map((node) => node.nodeName)).toEqual(["Node A", "Node B"]);
+    expect(groups.get("node:sub-a\0Node C")).toHaveLength(1);
+    expect(getMihomoEgressCandidateKey(nodes[2], NOW)).toBe("node:sub-a\0Node C");
   });
 
-  it("round-robins distinct fresh stable exit identities before sibling nodes", async () => {
+  it("selects only published healthy snapshot entries without Controller discovery", async () => {
     const pool = makePool();
     const nodes = [
-      { name: "Example Taiwan Node A", provider: "sub-a" },
-      { name: "Example Taiwan Node B", provider: "sub-a" },
-      { name: "Example Taiwan Node C", provider: "sub-a" },
+      addNode(pool, "Taiwan Node", "4:192.0.2.20"),
+      addNode(pool, "Japan Node", "4:192.0.2.21"),
     ];
-    setEgress(pool, "sub-a", "Example Taiwan Node A", "4:192.0.2.20");
-    setEgress(pool, "sub-a", "Example Taiwan Node B", "4:192.0.2.20");
-    setEgress(pool, "sub-a", "Example Taiwan Node C", "4:192.0.2.21");
-    const context = { attemptedNodeKeys: new Set(), attemptedEgressKeys: new Set(), deprioritizedRegions: new Set(), attempts: 0 };
-    const options = {
+    publish(pool, nodes);
+    const result = await prepareMihomoRouteAttempt({
       poolId: pool.id,
-      businessProviderId: "opencode",
-      routeContext: context,
+      modelId: "model-a",
+      routeContext: context(),
       getPool: async () => pool,
-      makeClient: () => makeClient(nodes, { "sub-a": nodes.map((node) => node.name), "sub-b": [] }),
-      nowMs: 1000,
-    };
+      makeClient: () => { throw new Error("request route must not discover Mihomo directory"); },
+      nowMs: NOW,
+    });
 
-    const first = await prepareMihomoRouteAttempt(options);
-    const second = await prepareMihomoRouteAttempt(options);
-    expect(first.route.egressIdentityKey).toBe("4:192.0.2.20");
-    expect(second.route.egressIdentityKey).toBe("4:192.0.2.21");
-    expect(second.route.nodeName).toBe("Example Taiwan Node C");
-    expect(context.attemptedEgressKeys).toEqual(new Set(["4:192.0.2.20", "4:192.0.2.21"]));
+    expect(result.route.egressIdentityKey).toMatch(/^4:/);
+    expect(result.route.modelId).toBe("model-a");
+    expect(result.route.egressSnapshot.scopeEligible).toBe(true);
+    result.reservation.release();
   });
 
-  it("bounds request attempts by distinct egress identities, not sibling node count", async () => {
-    const pool = makePool("egress-attempt-limit");
+  it("uses the preferred same-egress entry for a backup without consuming an exit attempt", async () => {
+    const pool = makePool("backup");
     const nodes = [
-      { name: "Example Taiwan Node A", provider: "sub-a" },
-      { name: "Example Taiwan Node B", provider: "sub-a" },
-      { name: "Example Taiwan Node C", provider: "sub-a" },
+      addNode(pool, "Node A1", "4:192.0.2.30"),
+      addNode(pool, "Node A2", "4:192.0.2.30"),
+      addNode(pool, "Node B", "4:192.0.2.31"),
     ];
-    setEgress(pool, "sub-a", "Example Taiwan Node A", "4:192.0.2.20");
-    setEgress(pool, "sub-a", "Example Taiwan Node B", "4:192.0.2.20");
-    setEgress(pool, "sub-a", "Example Taiwan Node C", "4:192.0.2.21");
-    const context = { attemptedNodeKeys: new Set(), attemptedEgressKeys: new Set(), deprioritizedRegions: new Set(), attempts: 0 };
-    const options = {
+    publish(pool, nodes);
+    const routeContext = context();
+    const first = await prepareMihomoRouteAttempt({
       poolId: pool.id,
-      businessProviderId: "opencode",
-      routeContext: context,
+      modelId: "model-a",
+      routeContext,
       getPool: async () => pool,
-      makeClient: () => makeClient(nodes, { "sub-a": nodes.map((node) => node.name), "sub-b": [] }),
-      nowMs: 1000,
-    };
+      nowMs: NOW,
+    });
+    first.reservation.release();
+    routeContext.preferredEgressKey = first.route.egressIdentityKey;
+    const second = await prepareMihomoRouteAttempt({
+      poolId: pool.id,
+      modelId: "model-a",
+      routeContext,
+      getPool: async () => pool,
+      nowMs: NOW,
+    });
 
-    const first = await prepareMihomoRouteAttempt(options);
-    const second = await prepareMihomoRouteAttempt(options);
-    const third = await prepareMihomoRouteAttempt(options);
-    expect(first.route).not.toBeNull();
-    expect(second.route).not.toBeNull();
-    expect(context.maxAttempts).toBe(2);
-    expect(third.route).toBeNull();
-  });
-
-  it("preserves region priority and skips an attempted egress key", async () => {
-    const pool = makePool();
-    const nodes = [
-      { name: "Example Taiwan Node A", provider: "sub-a" },
-      { name: "Example Taiwan Node B", provider: "sub-a" },
-      { name: "Example Japan Node A", provider: "sub-a" },
-    ];
-    setEgress(pool, "sub-a", "Example Taiwan Node A", "4:192.0.2.20");
-    setEgress(pool, "sub-a", "Example Taiwan Node B", "4:192.0.2.21");
-    setEgress(pool, "sub-a", "Example Japan Node A", "4:203.0.113.31");
-    const result = await prepare(pool, nodes, { attemptedEgressKeys: new Set(["4:192.0.2.20"]) });
-    expect(result.route).toMatchObject({ region: "TW", nodeName: "Example Taiwan Node B", egressIdentityKey: "4:192.0.2.21" });
-  });
-
-  it.each([
-    [
-      "unknown",
-      null,
-      {
-        identityKey: null,
-        confidence: "unknown",
-        observedAt: null,
-        expiresAt: null,
-        scopeEligible: false,
-      },
-    ],
-    [
-      "dynamic",
-      {
-        ip: "192.0.2.20",
-        family: 4,
-        identityKey: "4:192.0.2.20",
-        confidence: "dynamic",
-        observedAt: 100,
-        expiresAt: 9999999999999,
-      },
-      {
-        identityKey: "4:192.0.2.20",
-        confidence: "dynamic",
-        observedAt: 100,
-        expiresAt: 9999999999999,
-        scopeEligible: false,
-      },
-    ],
-    [
-      "stale",
-      {
-        ip: "192.0.2.21",
-        family: 4,
-        identityKey: "4:192.0.2.21",
-        confidence: "stable",
-        observedAt: 100,
-        expiresAt: 999,
-      },
-      {
-        identityKey: "4:192.0.2.21",
-        confidence: "stable",
-        observedAt: 100,
-        expiresAt: 999,
-        scopeEligible: false,
-      },
-    ],
-  ])("keeps %s mappings safe while preserving their attempt snapshot", async (caseName, egress, expectedSnapshot) => {
-    const pool = makePool(`egress-route-${caseName}`);
-    const nodeName = `TW-${caseName.toUpperCase()}`;
-    const nodes = [{ name: nodeName, provider: "sub-a" }];
-    if (egress) {
-      setEgress(pool, "sub-a", nodeName, egress.identityKey, {
-        confidence: egress.confidence,
-        expiresAt: egress.expiresAt,
-      });
-    }
-    const result = await prepare(pool, nodes);
-    expect(result.route).not.toBeNull();
-    expect(result.route.egressIdentityKey).toMatch(/^node:/);
-    expect(result.route.egressSnapshot).toMatchObject(expectedSnapshot);
-    expect(getMihomoEgressCandidateKey({ key: "sub-a\0TW-UNKNOWN", egress: null }, 1000)).toBe("node:sub-a\0TW-UNKNOWN");
+    expect(first.route.egressIdentityKey).toBe("4:192.0.2.30");
+    expect(second.route.egressIdentityKey).toBe("4:192.0.2.30");
+    expect(second.route.nodeName).toBe("Node A2");
+    expect(routeContext.attempts).toBe(2 - 0);
+    second.reservation.release();
   });
 });

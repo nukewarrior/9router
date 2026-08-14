@@ -59,8 +59,8 @@ function routeFor(identityKey = "4:198.51.100.20", scopeEligible = true) {
   };
 }
 
-describe("Mihomo egress refresh after rate limit", () => {
-  it("marks the node mapping for refresh while writing egress cooldown", async () => {
+describe("Mihomo egress cooldown after rate limit", () => {
+  it("writes model×egress cooldown without remapping the node", async () => {
     const pool = makePool();
     const route = routeFor();
 
@@ -75,14 +75,14 @@ describe("Mihomo egress refresh after rate limit", () => {
     });
 
     expect(result).toMatchObject({ updated: true, scope: "egress", identityKey: "4:198.51.100.20" });
-    expect(pool.mihomoState.proxyProviders.subscription.nodes["Example Taiwan Node A"].egress.needsProbe).toBe(true);
+    expect(pool.mihomoState.proxyProviders.subscription.nodes["Example Taiwan Node A"].egress.needsProbe).toBe(false);
     expect(getMihomoEgressBusinessState(pool, "4:198.51.100.20", "opencode")).toMatchObject({
       backoffLevel: 1,
       lastStatus: 429,
     });
   });
 
-  it("also refreshes mappings for FreeUsageLimitError classified as an IP candidate", async () => {
+  it("keeps FreeUsageLimitError model×egress-scoped without remapping", async () => {
     const pool = makePool();
     const route = routeFor();
 
@@ -97,7 +97,7 @@ describe("Mihomo egress refresh after rate limit", () => {
     });
 
     expect(result.scope).toBe("egress");
-    expect(pool.mihomoState.proxyProviders.subscription.nodes["Example Taiwan Node A"].egress.needsProbe).toBe(true);
+    expect(pool.mihomoState.proxyProviders.subscription.nodes["Example Taiwan Node A"].egress.needsProbe).toBe(false);
   });
 
   it("does not mark mappings for a generic upstream failure", async () => {

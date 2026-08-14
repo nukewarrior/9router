@@ -3,26 +3,25 @@ import { createMihomoClient, MIHOMO_ERROR_CODES, validateMihomoControllerUrl } f
 import { normalizeMihomoConfig } from "./mihomoConfig.js";
 import { isMihomoProxyPool } from "./proxyPoolTypes.js";
 import { mihomoSelectorMutex } from "./keyedMutex.js";
-import { enqueueMihomoEgressProbe, getMihomoEgressProbeReason } from "./mihomoEgressScheduler.js";
+import {
+  getHealthyMihomoSnapshot,
+  reserveHealthyMihomoEgress,
+} from "./mihomoHealthPool.js";
+import {
+  getMihomoModelHealthState,
+  isMihomoStableEgress,
+  migrateMihomoState,
+} from "./mihomoState.js";
 import {
   createMihomoDebugContext,
   createMihomoDebugId,
   mihomoDebug,
   mihomoErrorFields,
 } from "open-sse/utils/mihomoDebug.js";
-import {
-  attachMihomoNodeEgress,
-  discoverMihomoNodeDirectory,
-  getMihomoEgressBusinessState,
-  getMihomoNodeBusinessState,
-  isMihomoStableEgress,
-} from "./mihomoState.js";
 
 function text(value) {
   return value === undefined || value === null ? "" : String(value).trim();
 }
-
-const routeRotationState = new Map();
 
 function selectorKey(controllerUrl, selectorName) {
   return `${validateMihomoControllerUrl(controllerUrl)}\0${selectorName}`;
@@ -82,8 +81,8 @@ function verifySelector(selector, selectorName, nodeName) {
 
 /**
  * Hold the per-Selector lease until the callback returns. The callback is
- * expected to await the upstream fetch headers; streaming body consumption
- * happens after handleChatCore returns and therefore does not hold the lease.
+ * expected to await upstream response headers; streaming body consumption
+ * happens after the callback returns and therefore does not hold the lease.
  */
 export async function withMihomoSelectorLease({
   poolId,
@@ -175,7 +174,9 @@ export function getMihomoSelectorMutexSize() {
 function finiteOrNull(value) {
   if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
-  return Number.isFinite(number) ? number : null;
+  if (Number.isFinite(number)) return number;
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function buildMihomoEgressSnapshot({
@@ -184,6 +185,7 @@ function buildMihomoEgressSnapshot({
   confidence = "unknown",
   observedAt = null,
   expiresAt = null,
+  evidenceVersion = 0,
   startedAtMs,
   scopeEligible = false,
 } = {}) {
@@ -194,6 +196,7 @@ function buildMihomoEgressSnapshot({
     confidence: text(egress?.confidence) || text(confidence) || "unknown",
     observedAt: finiteOrNull(egress?.observedAt ?? observedAt),
     expiresAt: finiteOrNull(egress?.expiresAt ?? expiresAt),
+    evidenceVersion: Math.max(0, Math.floor(Number(egress?.evidenceVersion ?? evidenceVersion) || 0)),
     scopeEligible: scopeEligible === true && Boolean(snapshotIdentityKey),
   });
 }
@@ -210,7 +213,10 @@ export function buildMihomoRoute({
   egressIdentityKey: identityKey = null,
   egressConfidence = "unknown",
   egressSnapshot = null,
+  egressEvidenceVersion = 0,
+  mappingVersion = 0,
   requestId = null,
+  modelId = null,
   maxAttempts = null,
 }) {
   const startedAtMs = Number.isFinite(Number(attemptStartedAtMs)) ? Number(attemptStartedAtMs) : Date.now();
@@ -219,8 +225,10 @@ export function buildMihomoRoute({
     : null;
   const route = {
     proxyPoolId,
+    modelId: text(modelId) || null,
     proxyProvider: proxyProvider || null,
     nodeName,
+    nodeKey: `${proxyProvider || "__selector__"}\0${nodeName}`,
     region: region || "OTHER",
     selectorName,
     egressIdentityKey: identityKey || null,
@@ -229,9 +237,11 @@ export function buildMihomoRoute({
       ...(routeEgressSnapshot || {}),
       identityKey: routeEgressSnapshot ? routeEgressSnapshot.identityKey : identityKey,
       confidence: routeEgressSnapshot?.confidence || egressConfidence,
+      evidenceVersion: routeEgressSnapshot?.evidenceVersion ?? egressEvidenceVersion,
       startedAtMs,
       scopeEligible: routeEgressSnapshot?.scopeEligible === true,
     }),
+    mappingVersion: Math.max(0, Math.floor(Number(mappingVersion) || 0)),
     attempt: Number.isFinite(attempt) ? attempt : 1,
     attemptStartedAtMs: startedAtMs,
     routeId: routeId || `${proxyPoolId}:${nodeName}:${Date.now()}`,
@@ -241,47 +251,8 @@ export function buildMihomoRoute({
   return route;
 }
 
-function parseCooldownUntil(state) {
-  const timestamp = Date.parse(state?.cooldownUntil || "");
-  return Number.isFinite(timestamp) ? timestamp : null;
-}
-
-function cooldownExpiries(pool, node, businessProviderId, config, nowMs) {
-  const expiries = [];
-  const nodeExpiry = parseCooldownUntil(getMihomoNodeBusinessState(pool, node, businessProviderId));
-  if (nodeExpiry !== null) expiries.push(nodeExpiry);
-  if (config?.egressScopedCooldown === true && isMihomoStableEgress(node.egress, nowMs)) {
-    const egressState = getMihomoEgressBusinessState(pool, node.egress.identityKey, businessProviderId);
-    const egressExpiry = parseCooldownUntil(egressState);
-    if (egressExpiry !== null) expiries.push(egressExpiry);
-  }
-  return expiries;
-}
-
-function isMihomoRouteCooling(pool, node, businessProviderId, config, nowMs) {
-  return cooldownExpiries(pool, node, businessProviderId, config, nowMs).some((expiry) => expiry > nowMs);
-}
-
-function getRotationState(poolId, businessProviderId) {
-  const key = `${poolId}\0${businessProviderId}`;
-  let state = routeRotationState.get(key);
-  if (!state) {
-    state = {
-      nodeCursorByRegion: new Map(),
-      egressCursorByRegion: new Map(),
-      nodeCursorByEgress: new Map(),
-      shadowEgressCursorByRegion: new Map(),
-      shadowNodeCursorByEgress: new Map(),
-    };
-    routeRotationState.set(key, state);
-  }
-  return state;
-}
-
 export function getMihomoEgressCandidateKey(node, nowMs = Date.now()) {
-  if (isMihomoStableEgress(node?.egress, nowMs)) {
-    return node.egress.identityKey;
-  }
+  if (isMihomoStableEgress(node?.egress, nowMs)) return node.egress.identityKey;
   return `node:${node?.key || `${node?.proxyProvider || "__selector__"}\0${node?.nodeName || ""}`}`;
 }
 
@@ -292,315 +263,221 @@ export function groupMihomoNodesByEgress(nodes = [], nowMs = Date.now()) {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(node);
   }
-  for (const group of groups.values()) group.sort((a, b) => a.key.localeCompare(b.key));
+  for (const group of groups.values()) group.sort((left, right) => left.key.localeCompare(right.key));
   return groups;
 }
 
-function chooseCandidate(nodes, config, routeContext, poolId, businessProviderId) {
-  const preferred = nodes.filter((node) => !routeContext.deprioritizedRegions.has(node.region));
-  const pool = preferred.length > 0 ? preferred : nodes;
-  if (pool.length === 0) return null;
-
-  const order = new Map((config.regionOrder || []).map((region, index) => [region, index]));
-  const grouped = new Map();
-  for (const node of pool) {
-    if (!grouped.has(node.region)) grouped.set(node.region, []);
-    grouped.get(node.region).push(node);
-  }
-  const regions = [...grouped.keys()].sort((a, b) => (order.get(a) ?? Number.MAX_SAFE_INTEGER) - (order.get(b) ?? Number.MAX_SAFE_INTEGER) || a.localeCompare(b));
-  const rotation = getRotationState(poolId, businessProviderId);
-  // regionOrder is a priority list: a fresh request stays in the first
-  // eligible region. The process-local cursor only balances nodes within it.
-  const region = regions[0];
-  const regionNodes = grouped.get(region).sort((a, b) => a.key.localeCompare(b.key));
-  const cursor = rotation.nodeCursorByRegion.get(region) || 0;
-  const selected = regionNodes[cursor % regionNodes.length];
-  rotation.nodeCursorByRegion.set(region, cursor + 1);
-  return selected;
+function modelIdForRequest(modelId, businessProviderId) {
+  return text(modelId) || text(businessProviderId);
 }
 
-function chooseEgressCandidate(nodes, config, routeContext, poolId, businessProviderId, nowMs, { shadow = false } = {}) {
-  const preferred = nodes.filter((node) => !routeContext.deprioritizedRegions.has(node.region));
-  const pool = preferred.length > 0 ? preferred : nodes;
-  if (pool.length === 0) return null;
-
-  const order = new Map((config.regionOrder || []).map((region, index) => [region, index]));
-  const byRegion = new Map();
-  for (const node of pool) {
-    if (!byRegion.has(node.region)) byRegion.set(node.region, []);
-    byRegion.get(node.region).push(node);
-  }
-  const regions = [...byRegion.keys()].sort((a, b) => (order.get(a) ?? Number.MAX_SAFE_INTEGER) - (order.get(b) ?? Number.MAX_SAFE_INTEGER) || a.localeCompare(b));
-  const rotation = getRotationState(poolId, businessProviderId);
-  const region = regions[0];
-  const groups = groupMihomoNodesByEgress(byRegion.get(region), nowMs);
-  const groupKeys = [...groups.keys()].sort();
-  if (groupKeys.length === 0) return null;
-
-  const regionCursor = shadow
-    ? (rotation.shadowEgressCursorByRegion.get(region) || 0)
-    : (rotation.egressCursorByRegion.get(region) || 0);
-  const groupKey = groupKeys[regionCursor % groupKeys.length];
-  const nextRegionCursor = regionCursor + 1;
-  if (shadow) rotation.shadowEgressCursorByRegion.set(region, nextRegionCursor);
-  else rotation.egressCursorByRegion.set(region, nextRegionCursor);
-
-  const group = groups.get(groupKey);
-  const nodeCursorKey = `${region}\0${groupKey}`;
-  const nodeCursorMap = shadow ? rotation.shadowNodeCursorByEgress : rotation.nodeCursorByEgress;
-  const nodeCursor = nodeCursorMap.get(nodeCursorKey) || 0;
-  const selected = group[nodeCursor % group.length];
-  nodeCursorMap.set(nodeCursorKey, nodeCursor + 1);
-  return { node: selected, egressKey: groupKey };
+function modelIsManaged(state, modelId) {
+  return Array.isArray(state.maintenance?.selectedModels)
+    && state.maintenance.selectedModels.includes(modelId);
 }
 
-function earliestCooldownUntil(pool, nodes, businessProviderId, config, nowMs) {
+function nodeTransportCooling(node, nowMs) {
+  const cooldownUntil = finiteOrNull(node?.transportCooldownUntil);
+  if (Number.isFinite(cooldownUntil)) return cooldownUntil > nowMs;
+  return text(node?.transportStatus) === "cooling";
+}
+
+function nextMaintenanceAt(state, nowMs) {
+  const next = finiteOrNull(state.maintenance?.nextRunAt);
+  return Number.isFinite(next) && next > nowMs ? next : nowMs + 1000;
+}
+
+function earliestModelCooldown(state, modelId, nowMs) {
   let earliest = null;
-  for (const node of nodes) {
-    for (const expiry of cooldownExpiries(pool, node, businessProviderId, config, nowMs)) {
-      if (expiry > nowMs && (earliest === null || expiry < earliest)) earliest = expiry;
-    }
+  for (const identityKey of Object.keys(state.egressIdentities || {})) {
+    const health = getMihomoModelHealthState({ mihomoState: state }, identityKey, modelId);
+    const cooldownUntil = finiteOrNull(health.cooldownUntil);
+    if (health.status !== "cooling" || !Number.isFinite(cooldownUntil) || cooldownUntil <= nowMs) continue;
+    if (earliest === null || cooldownUntil < earliest) earliest = cooldownUntil;
   }
-  return earliest ? new Date(earliest).toISOString() : null;
+  return earliest;
 }
 
-function buildCandidateDebugStats(pool, directory, availableNodes, businessProviderId, config, nowMs) {
-  const stableEgresses = new Set();
-  const coolingEgresses = new Set();
-  let coolingNodes = 0;
-  let unknownEgress = 0;
+function hasInventoryNodes(state) {
+  return Object.values(state.proxyProviders || {}).some((provider) => Object.keys(provider?.nodes || {}).length > 0);
+}
 
-  for (const node of directory.nodes) {
-    try {
-      if (parseCooldownUntil(getMihomoNodeBusinessState(pool, node, businessProviderId)) > nowMs) coolingNodes += 1;
-    } catch {
-      // Diagnostics must never make an otherwise valid route unavailable.
-    }
-    if (!isMihomoStableEgress(node.egress, nowMs)) {
-      unknownEgress += 1;
-      continue;
-    }
-    stableEgresses.add(node.egress.identityKey);
-    if (config.egressScopedCooldown === true) {
-      try {
-        if (parseCooldownUntil(getMihomoEgressBusinessState(pool, node.egress.identityKey, businessProviderId)) > nowMs) {
-          coolingEgresses.add(node.egress.identityKey);
-        }
-      } catch {
-        // Diagnostics must never make an otherwise valid route unavailable.
-      }
-    }
+function makePoolStateError(code, message, { status, retryAfter = null, cause = null } = {}) {
+  return new MihomoRouteError(code, message, {
+    status,
+    retryAfter: retryAfter ? new Date(retryAfter).toISOString() : null,
+    cause,
+  });
+}
+
+function mapReservationError(error, state, modelId, nowMs) {
+  const code = error?.code || "MIHOMO_POOL_WARMING";
+  if (code === "MIHOMO_POOL_SATURATED") {
+    return makePoolStateError(code, "Mihomo healthy egress start capacity is saturated", {
+      status: 503,
+      retryAfter: nowMs + 1000,
+      cause: error,
+    });
   }
+  if (code === "MIHOMO_POOL_EXHAUSTED") return error;
+  if (code === "ABORT_ERR") return error;
+  if (code === "MIHOMO_POOL_RATE_LIMITED") return error;
+  const cooldown = earliestModelCooldown(state, modelId, nowMs);
+  if (cooldown !== null) {
+    return makePoolStateError("MIHOMO_POOL_RATE_LIMITED", "All healthy Mihomo egresses are cooling down", {
+      status: 429,
+      retryAfter: cooldown,
+      cause: error,
+    });
+  }
+  return makePoolStateError(code, error?.message || "Mihomo healthy pool is warming", {
+    status: 503,
+    retryAfter: nextMaintenanceAt(state, nowMs),
+    cause: error,
+  });
+}
 
-  return {
-    total: directory.nodes.length,
-    eligible: availableNodes.length,
-    coolingNodes,
-    coolingEgress: coolingEgresses.size,
-    distinctEgress: stableEgresses.size,
-    unknownEgress,
-    regionOrder: (config.regionOrder || []).join(",") || "none",
-    providerFilter: config.providerNames?.length > 0 ? "enabled" : "disabled",
-    includeRegex: config.includeRegex ? "enabled" : "disabled",
-    excludeRegex: config.excludeRegex ? "enabled" : "disabled",
-  };
+function noSnapshotError(state, modelId, nowMs) {
+  const cooldown = earliestModelCooldown(state, modelId, nowMs);
+  if (cooldown !== null) {
+    return makePoolStateError("MIHOMO_POOL_RATE_LIMITED", "All healthy Mihomo egresses are cooling down", {
+      status: 429,
+      retryAfter: cooldown,
+    });
+  }
+  if (!hasInventoryNodes(state) && Number(state.maintenance?.nodeCount) === 0) {
+    return makePoolStateError("MIHOMO_NO_ELIGIBLE_NODES", "No eligible Mihomo leaf proxy nodes are available", {
+      status: 503,
+      retryAfter: nextMaintenanceAt(state, nowMs),
+    });
+  }
+  return makePoolStateError("MIHOMO_POOL_WARMING", "Mihomo healthy pool is warming", {
+    status: 503,
+    retryAfter: nextMaintenanceAt(state, nowMs),
+  });
 }
 
 /**
- * Discover and choose one node for a request. The routeContext is deliberately
- * request-scoped; only the fairness cursor lives in process memory.
+ * Select one egress from the immutable, model-specific Healthy Snapshot.
+ * No Controller calls, directory discovery or request-time probe is allowed
+ * on this path.
  */
 export async function prepareMihomoRouteAttempt({
   poolId,
-  businessProviderId,
-  routeContext,
+  modelId = null,
+  businessProviderId = null,
+  routeContext = {},
   getPool = getProxyPoolById,
-  makeClient = createMihomoClient,
-  enqueueProbe = null,
+  reserveEgress = reserveHealthyMihomoEgress,
   nowMs = Date.now(),
+  signal = null,
 } = {}) {
-  if (!routeContext || !(routeContext.attemptedNodeKeys instanceof Set) || !(routeContext.deprioritizedRegions instanceof Set)) {
-    throw new TypeError("routeContext must contain attemptedNodeKeys and deprioritizedRegions sets");
+  const selectedModelId = modelIdForRequest(modelId, businessProviderId);
+  if (!selectedModelId) throw new MihomoRouteError("MIHOMO_MODEL_NOT_MANAGED", "Mihomo model is required", { status: 503 });
+  const { pool, config } = await loadManagedPool(poolId, getPool);
+  const state = migrateMihomoState(pool.mihomoState);
+  if (!modelIsManaged(state, selectedModelId)) {
+    throw makePoolStateError("MIHOMO_MODEL_NOT_MANAGED", "The model is not managed by the Mihomo health pool", { status: 503 });
   }
+
   if (!(routeContext.attemptedEgressKeys instanceof Set)) routeContext.attemptedEgressKeys = new Set();
+  if (!(routeContext.attemptedNodeKeysByEgress instanceof Map)) routeContext.attemptedNodeKeysByEgress = new Map();
+  routeContext.modelId = selectedModelId;
   if (!routeContext.requestId) routeContext.requestId = createMihomoDebugId();
   if (!routeContext.routeId) routeContext.routeId = createMihomoDebugId();
-  const { pool, config } = await loadManagedPool(poolId, getPool);
-  const prepareDebugContext = createMihomoDebugContext({
-    requestId: routeContext.requestId,
-    routeId: routeContext.routeId,
-  });
-  mihomoDebug("prepare", prepareDebugContext, {
-    pool: poolId,
-    selector: config.selectorName,
-    maxAttempts: config.maxAttemptsPerRequest,
-    businessProvider: businessProviderId,
-    providerFilter: config.providerNames?.length > 0 ? "enabled" : "disabled",
-    includeRegex: config.includeRegex ? "enabled" : "disabled",
-    excludeRegex: config.excludeRegex ? "enabled" : "disabled",
-  });
-  const client = makeClient({
-    controllerUrl: config.controllerUrl,
-    secret: config.controllerSecret,
-    timeoutMs: config.controllerTimeoutMs,
-  });
-  const directory = attachMihomoNodeEgress(await discoverMihomoNodeDirectory({
-    poolId,
-    client,
-    selectorName: config.selectorName,
-    providerNames: config.providerNames,
-    includeRegex: config.includeRegex,
-    excludeRegex: config.excludeRegex,
-    mihomoState: pool.mihomoState,
-    ttlMs: config.syncTtlMs,
-    nowMs,
-  }), pool);
 
-  // Mapping maintenance is deliberately fire-and-forget. The request keeps
-  // using the safe node-scoped fallback while a single background worker
-  // refreshes unknown/stale/expiring nodes through the same Selector lease.
-  const queueProbe = enqueueProbe || (getPool === getProxyPoolById ? enqueueMihomoEgressProbe : null);
-  if (queueProbe) {
-    for (const node of directory.nodes) {
-      const reason = getMihomoEgressProbeReason(node.egress, {
-        nowMs,
-        ttlMs: config.egressProbeTtlMs,
-      });
-      if (!reason) continue;
-      try {
-        const queued = queueProbe({
-          poolId,
-          proxyProvider: node.proxyProvider,
-          nodeName: node.nodeName,
-          egress: node.egress,
-          reason,
-          ttlMs: config.egressProbeTtlMs,
-          getPool,
-          makeClient,
-        });
-        if (queued && typeof queued.then === "function") void queued.catch(() => {});
-      } catch {
-        // Queue maintenance must never turn a healthy route preparation into
-        // a user-visible failure.
-      }
-    }
-  }
-
-  const availableNodes = directory.nodes.filter((node) => {
-    if (routeContext.attemptedNodeKeys.has(node.key)) return false;
-    return !isMihomoRouteCooling(pool, node, businessProviderId, config, nowMs);
-  });
-  const availableEgressNodes = config.preferDistinctEgress
-    ? availableNodes.filter((node) => !routeContext.attemptedEgressKeys.has(getMihomoEgressCandidateKey(node, nowMs)))
-    : availableNodes;
-  const availableCandidateCount = config.preferDistinctEgress
-    ? new Set(availableEgressNodes.map((node) => getMihomoEgressCandidateKey(node, nowMs))).size
-    : availableNodes.length;
+  const snapshot = getHealthyMihomoSnapshot({ poolId, modelId: selectedModelId });
+  if (!snapshot) throw noSnapshotError(state, selectedModelId, nowMs);
+  if (snapshot.entries.length === 0) throw noSnapshotError(state, selectedModelId, nowMs);
   if (routeContext.maxAttempts === undefined) {
-    routeContext.maxAttempts = Math.min(config.maxAttemptsPerRequest, availableCandidateCount);
+    routeContext.maxAttempts = Math.min(config.maxAttemptsPerRequest, snapshot.entries.length);
+  }
+  const effectiveMaxAttempts = Math.max(0, Number(routeContext.maxAttempts) || 0);
+  const preferredEgressKey = text(routeContext.preferredEgressKey) || null;
+  if (routeContext.attempts >= effectiveMaxAttempts && !preferredEgressKey) {
+    return { route: null, snapshot, effectiveMaxAttempts, exhausted: true };
   }
 
-  const effectiveMaxAttempts = routeContext.maxAttempts;
-  mihomoDebug("candidates", {
-    ...prepareDebugContext,
-    maxAttempts: effectiveMaxAttempts,
-  }, buildCandidateDebugStats(pool, directory, availableNodes, businessProviderId, config, nowMs));
-  if (routeContext.attempts >= effectiveMaxAttempts) {
-    return {
-      route: null,
-      directory,
-      effectiveMaxAttempts,
-      earliestCooldown: earliestCooldownUntil(pool, directory.nodes, businessProviderId, config, nowMs),
-    };
-  }
+  while (true) {
+    let reservation;
+    try {
+      reservation = await reserveEgress({
+        poolId,
+        modelId: selectedModelId,
+        attemptedEgressKeys: routeContext.attemptedEgressKeys,
+        signal: signal || null,
+        admissionWaitMs: config.admissionWaitMs,
+        maxInFlightStartsPerEgress: config.maxInFlightStartsPerEgress,
+        preferredEgressKey,
+        nowMs,
+      });
+      routeContext.preferredEgressKey = null;
+    } catch (error) {
+      if (error?.code === "MIHOMO_POOL_EXHAUSTED") {
+        return { route: null, snapshot, effectiveMaxAttempts, exhausted: true };
+      }
+      throw mapReservationError(error, state, selectedModelId, nowMs);
+    }
 
-  const shadowCandidate = !config.preferDistinctEgress
-    ? chooseEgressCandidate(availableNodes, config, routeContext, poolId, businessProviderId, nowMs, { shadow: true })
-    : null;
-  const selectedCandidate = config.preferDistinctEgress
-    ? chooseEgressCandidate(availableEgressNodes, config, routeContext, poolId, businessProviderId, nowMs)
-    : { node: chooseCandidate(availableNodes, config, routeContext, poolId, businessProviderId), egressKey: null };
-  const candidate = selectedCandidate?.node;
-  if (!candidate) {
-    return {
-      route: null,
-      directory,
-      effectiveMaxAttempts,
-      earliestCooldown: earliestCooldownUntil(pool, directory.nodes, businessProviderId, config, nowMs),
-    };
-  }
+    const entry = reservation.entry;
+    const attemptedNodes = routeContext.attemptedNodeKeysByEgress.get(entry.identityKey) || new Set();
+    const node = entry.nodes.find((candidate) => (
+      !attemptedNodes.has(candidate.key) && !nodeTransportCooling(candidate, nowMs)
+    ));
+    if (!node) {
+      reservation.release();
+      routeContext.attemptedEgressKeys.add(entry.identityKey);
+      continue;
+    }
 
-  routeContext.attempts += 1;
-  routeContext.attemptedNodeKeys.add(candidate.key);
-  const candidateEgressKey = selectedCandidate.egressKey || getMihomoEgressCandidateKey(candidate, nowMs);
-  if (config.preferDistinctEgress) routeContext.attemptedEgressKeys.add(candidateEgressKey);
-  const selectedNodeState = getMihomoNodeBusinessState(pool, candidate, businessProviderId);
-  const selectedEgressState = isMihomoStableEgress(candidate.egress, nowMs)
-    ? getMihomoEgressBusinessState(pool, candidate.egress.identityKey, businessProviderId)
-    : null;
-  const attemptDebugContext = createMihomoDebugContext({
-    requestId: routeContext.requestId,
-    routeId: routeContext.routeId,
-    attempt: routeContext.attempts,
-    maxAttempts: effectiveMaxAttempts,
-  });
-  mihomoDebug("selected", attemptDebugContext, {
-    node: candidate.nodeName,
-    region: candidate.region,
-    egress: candidate.egress?.identityKey || "unknown",
-    egressConfidence: candidate.egress?.confidence || "unknown",
-    egressFresh: isMihomoStableEgress(candidate.egress, nowMs),
-    nodeCooldownUntil: selectedNodeState.cooldownUntil || null,
-    egressCooldownUntil: selectedEgressState?.cooldownUntil || null,
-  });
-  const shadowRoute = shadowCandidate?.node
-    ? buildMihomoRoute({
+    attemptedNodes.add(node.key);
+    routeContext.attemptedNodeKeysByEgress.set(entry.identityKey, attemptedNodes);
+    routeContext.attempts = (Number(routeContext.attempts) || 0) + 1;
+    const attemptStartedAtMs = nowMs;
+    const route = buildMihomoRoute({
       proxyPoolId: poolId,
-      proxyProvider: shadowCandidate.node.proxyProvider,
-      nodeName: shadowCandidate.node.nodeName,
-      region: shadowCandidate.node.region,
-      selectorName: directory.selectorName || config.selectorName,
+      modelId: selectedModelId,
+      proxyProvider: node.proxyProvider,
+      nodeName: node.nodeName,
+      region: node.region,
+      selectorName: config.selectorName,
       attempt: routeContext.attempts,
       requestId: routeContext.requestId,
       routeId: routeContext.routeId,
       maxAttempts: effectiveMaxAttempts,
-      attemptStartedAtMs: nowMs,
-      egressIdentityKey: shadowCandidate.egressKey,
-      egressConfidence: shadowCandidate.node.egress?.confidence,
-      egressSnapshot: buildMihomoEgressSnapshot({
-        egress: shadowCandidate.node.egress,
-        startedAtMs: nowMs,
-        scopeEligible: config.egressScopedCooldown === true && isMihomoStableEgress(shadowCandidate.node.egress, nowMs),
-      }),
-    })
-    : null;
-  return {
-    route: buildMihomoRoute({
-      proxyPoolId: poolId,
-      proxyProvider: candidate.proxyProvider,
-      nodeName: candidate.nodeName,
-      region: candidate.region,
-      selectorName: directory.selectorName || config.selectorName,
-      attempt: routeContext.attempts,
-      requestId: routeContext.requestId,
-      routeId: routeContext.routeId,
-      maxAttempts: effectiveMaxAttempts,
-      attemptStartedAtMs: nowMs,
-      egressIdentityKey: candidateEgressKey,
-      egressConfidence: candidate.egress?.confidence,
-      egressSnapshot: buildMihomoEgressSnapshot({
-        egress: candidate.egress,
-        startedAtMs: nowMs,
-        scopeEligible: config.egressScopedCooldown === true && isMihomoStableEgress(candidate.egress, nowMs),
-      }),
-    }),
-    shadowRoute,
-    directory,
-    effectiveMaxAttempts,
-    earliestCooldown: earliestCooldownUntil(pool, directory.nodes, businessProviderId, config, nowMs),
-  };
+      attemptStartedAtMs,
+      egressIdentityKey: entry.identityKey,
+      egressConfidence: "stable",
+      egressEvidenceVersion: entry.evidenceVersion,
+      mappingVersion: node.mappingVersion,
+      egressSnapshot: {
+        identityKey: entry.identityKey,
+        confidence: "stable",
+        expiresAt: entry.expiresAt,
+        evidenceVersion: entry.evidenceVersion,
+        scopeEligible: true,
+      },
+    });
+    mihomoDebug("selected", createMihomoDebugContext(route), {
+      modelId: selectedModelId,
+      node: node.nodeName,
+      egress: entry.identityKey,
+      egressConfidence: "stable",
+      egressFresh: true,
+      evidenceVersion: entry.evidenceVersion,
+    });
+    return {
+      route,
+      entry,
+      reservation,
+      snapshot,
+      effectiveMaxAttempts,
+      exhausted: false,
+    };
+  }
 }
 
 export function clearMihomoRotationState() {
-  routeRotationState.clear();
+  // Kept as a no-op compatibility hook. Request routing no longer owns a
+  // Region/candidate rotation cursor; fairness lives in the Health Snapshot.
 }
