@@ -16,7 +16,7 @@ afterEach(() => {
 
 describe("Mihomo debug helpers", () => {
   it("sanitizes proxy credentials while retaining the listener address", () => {
-    expect(sanitizeProxyUrl("http://user:super-secret@10.11.11.1:17891")).toBe("http://10.11.11.1:17891");
+    expect(sanitizeProxyUrl("http://user:super-secret@192.0.2.10:17891")).toBe("http://192.0.2.10:17891");
   });
 
   it("keeps only protocol, host and port for request targets", () => {
