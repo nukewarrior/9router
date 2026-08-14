@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  DEFAULT_MIHOMO_REGION_ORDER,
+  DEFAULT_MIHOMO_MAINTENANCE_BACKOFF_MS,
   mergeMihomoConfig,
   normalizeMihomoConfig,
 } from "../../src/lib/network/mihomoConfig.js";
@@ -17,15 +17,34 @@ describe("Mihomo pool configuration", () => {
       ...baseConfig,
       controllerTimeoutMs: 999999,
       syncTtlMs: 1,
+      inventoryRefreshMs: 1,
       maxAttemptsPerRequest: 999,
+      egressProbeTtlMs: 1,
+      samplesPerNode: 1,
+      businessHealthRefreshMs: 1,
+      businessHealthTtlMs: 1,
+      businessProbeTimeoutMs: 999999,
+      admissionWaitMs: -1,
+      maxInFlightStartsPerEgress: 999,
       cooldown: { baseMs: 1, multiplier: 99, maxMs: 2 },
     });
 
     expect(config.controllerTimeoutMs).toBe(30000);
     expect(config.syncTtlMs).toBe(1000);
+    expect(config.inventoryRefreshMs).toBe(60000);
     expect(config.maxAttemptsPerRequest).toBe(50);
+    expect(config.egressProbeTtlMs).toBe(300000);
+    expect(config.samplesPerNode).toBe(2);
+    expect(config.businessHealthRefreshMs).toBe(60000);
+    expect(config.businessHealthTtlMs).toBe(120000);
+    expect(config.businessProbeTimeoutMs).toBe(60000);
+    expect(config.admissionWaitMs).toBe(0);
+    expect(config.maxInFlightStartsPerEgress).toBe(10);
     expect(config.cooldown).toEqual({ baseMs: 1000, multiplier: 10, maxMs: 1000 });
-    expect(config.regionOrder).toEqual(DEFAULT_MIHOMO_REGION_ORDER);
+    expect(config.maintenanceBackoffMs).toEqual(DEFAULT_MIHOMO_MAINTENANCE_BACKOFF_MS);
+    expect(config).not.toHaveProperty("regionOrder");
+    expect(config).not.toHaveProperty("preferDistinctEgress");
+    expect(config).not.toHaveProperty("egressScopedCooldown");
   });
 
   it("validates required fields and regexes", () => {
@@ -44,8 +63,23 @@ describe("Mihomo pool configuration", () => {
     expect(config.egressProbeUrl).toBe("https://api.ipify.org/");
     expect(config.samplesPerNode).toBe(2);
     expect(config.egressProbeTtlMs).toBe(21600000);
-    expect(config.preferDistinctEgress).toBe(false);
-    expect(config.egressScopedCooldown).toBe(false);
+    expect(config.businessHealthRefreshMs).toBe(900000);
+    expect(config.businessHealthTtlMs).toBe(2700000);
+    expect(config.businessProbeTimeoutMs).toBe(15000);
+    expect(config.admissionWaitMs).toBe(3000);
+    expect(config.maxInFlightStartsPerEgress).toBe(1);
+  });
+
+  it("ignores legacy Region and egress flags instead of writing them back", () => {
+    const config = normalizeMihomoConfig({
+      ...baseConfig,
+      regionOrder: ["US"],
+      preferDistinctEgress: true,
+      egressScopedCooldown: true,
+    });
+    expect(config).not.toHaveProperty("regionOrder");
+    expect(config).not.toHaveProperty("preferDistinctEgress");
+    expect(config).not.toHaveProperty("egressScopedCooldown");
   });
 
   it("requires an HTTPS egress probe URL", () => {

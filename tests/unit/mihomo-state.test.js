@@ -36,7 +36,7 @@ describe("Mihomo proxy pool state persistence", () => {
 
     expect(pool.strictProxy).toBe(true);
     expect(pool.mihomo.controllerSecret).toBe("secret");
-    expect(pool.mihomoState).toEqual({ proxyProviders: {}, egressIdentities: {} });
+    expect(pool.mihomoState).toMatchObject({ version: 2, proxyProviders: {}, egressIdentities: {} });
 
     await db.mutateProxyPool(pool.id, (current) => {
       current.mihomoState.proxyProviders.subA = { nodes: { "Example Taiwan Node A": { business: {} } } };

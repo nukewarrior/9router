@@ -3,6 +3,7 @@ import {
   getMihomoEgressBusinessState,
   getMihomoNodeEgress,
   isMihomoEgressFresh,
+  migrateMihomoState,
   recordMihomoNodeEgress,
 } from "../../src/lib/network/mihomoState.js";
 
@@ -48,6 +49,9 @@ describe("Mihomo egress state", () => {
   it("provides provider-isolated identity state defaults", () => {
     const pool = makePool();
     expect(getMihomoEgressBusinessState(pool, "4:198.51.100.20", "opencode")).toEqual({
+      status: "unknown",
+      refreshAt: null,
+      expiresAt: null,
       cooldownUntil: null,
       backoffLevel: 0,
       lastStatus: null,
@@ -55,6 +59,46 @@ describe("Mihomo egress state", () => {
       lastError: null,
       lastErrorAt: null,
       lastSuccessAt: null,
+      evidenceVersion: 0,
+      evidenceStartedAtMs: null,
+      source: null,
     });
+  });
+
+  it("migrates v1 mappings while dropping model-less business evidence", () => {
+    const migrated = migrateMihomoState({
+      proxyProviders: {
+        subscription: {
+          nodes: {
+            "Example Node": {
+              egress: mapping,
+              business: { opencode: { cooldownUntil: "2099-01-01T00:00:00.000Z" } },
+            },
+          },
+        },
+      },
+      egressIdentities: {
+        "4:198.51.100.20": {
+          business: { opencode: { cooldownUntil: "2099-01-01T00:00:00.000Z" } },
+        },
+      },
+    });
+
+    expect(migrated.version).toBe(2);
+    expect(migrated.proxyProviders.subscription.nodes["Example Node"]).toMatchObject({
+      egress: { identityKey: mapping.identityKey, mappingVersion: 1 },
+      transport: { status: "unknown", consecutiveFailures: 0 },
+    });
+    expect(migrated.proxyProviders.subscription.nodes["Example Node"].business).toBeUndefined();
+    expect(migrated.egressIdentities["4:198.51.100.20"]).toBeUndefined();
+  });
+
+  it("rejects unsafe state keys during migration", () => {
+    expect(() => migrateMihomoState({
+      proxyProviders: { constructor: { nodes: {} } },
+    })).toThrow(/safe state key/);
+    expect(() => migrateMihomoState({
+      proxyProviders: { subscription: { nodes: { prototype: {} } } },
+    })).toThrow(/safe state key/);
   });
 });
