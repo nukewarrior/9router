@@ -1,6 +1,13 @@
 import { Readable } from "stream";
 import { MEMORY_CONFIG } from "../config/runtimeConfig.js";
 import { dbg } from "./debugLog.js";
+import {
+  createMihomoDebugContext,
+  mihomoErrorFields,
+  proxyDebug,
+  sanitizeProxyUrl,
+  sanitizeTarget,
+} from "./mihomoDebug.js";
 
 const originalFetch = globalThis.fetch;
 const proxyDispatchers = new Map();
@@ -264,6 +271,75 @@ async function fetchViaProxy(url, options, proxyUrl, proxyOptions) {
   }
 }
 
+function getHeaderValue(headers, name) {
+  if (!headers) return "";
+  if (typeof headers.get === "function") return headers.get(name) || "";
+  return headers[name] || headers[name.toLowerCase()] || headers[name.toUpperCase()] || "";
+}
+
+function getMihomoDebugContext(proxyOptions) {
+  return createMihomoDebugContext(proxyOptions?.mihomoDebugContext || {
+    requestId: proxyOptions?.mihomoRequestId,
+    routeId: proxyOptions?.mihomoRouteId,
+    attempt: proxyOptions?.mihomoAttempt,
+    maxAttempts: proxyOptions?.mihomoMaxAttempts,
+  });
+}
+
+function isMihomoManaged(proxyOptions) {
+  return proxyOptions?.mihomoManaged === true;
+}
+
+async function withMihomoProxyDebug({ targetUrl, options, proxyOptions, proxyUrl }, operation) {
+  if (!isMihomoManaged(proxyOptions)) return operation();
+
+  const context = getMihomoDebugContext(proxyOptions);
+  const target = sanitizeTarget(targetUrl);
+  const startedAt = Date.now();
+  proxyDebug("fetch.start", context, {
+    method: String(options?.method || "GET").toUpperCase(),
+    protocol: target.protocol,
+    target: target.authority,
+    targetHost: target.hostname,
+    targetPort: target.port,
+    proxy: sanitizeProxyUrl(proxyUrl),
+    strictProxy: proxyOptions?.strictProxy === true,
+    streaming: proxyOptions?.streaming === true || /text\/event-stream/i.test(getHeaderValue(options?.headers, "accept")),
+  });
+
+  try {
+    const response = await operation();
+    proxyDebug("fetch.end", context, {
+      status: response?.status ?? "unknown",
+      elapsed: Date.now() - startedAt,
+    });
+    return response;
+  } catch (error) {
+    proxyDebug("fetch.throw", context, {
+      elapsed: Date.now() - startedAt,
+      ...mihomoErrorFields(error),
+    });
+    throw error;
+  }
+}
+
+function mihomoFetchResolutionError(targetUrl, options, proxyOptions, error) {
+  if (!isMihomoManaged(proxyOptions)) return;
+  const context = getMihomoDebugContext(proxyOptions);
+  const target = sanitizeTarget(targetUrl);
+  proxyDebug("fetch.start", context, {
+    method: String(options?.method || "GET").toUpperCase(),
+    protocol: target.protocol,
+    target: target.authority,
+    targetHost: target.hostname,
+    targetPort: target.port,
+    proxy: "unknown",
+    strictProxy: proxyOptions?.strictProxy === true,
+    streaming: proxyOptions?.streaming === true || /text\/event-stream/i.test(getHeaderValue(options?.headers, "accept")),
+  });
+  proxyDebug("fetch.throw", context, { elapsed: 0, ...mihomoErrorFields(error) });
+}
+
 /**
  * Create HTTPS request with manual socket connection (bypass DNS)
  */
@@ -338,7 +414,13 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
     return originalFetch(vercelRelayUrl, { ...options, headers: relayHeaders });
   }
 
-  const connectionProxyUrl = resolveConnectionProxyUrl(targetUrl, proxyOptions);
+  let connectionProxyUrl;
+  try {
+    connectionProxyUrl = resolveConnectionProxyUrl(targetUrl, proxyOptions);
+  } catch (error) {
+    mihomoFetchResolutionError(targetUrl, options, proxyOptions, error);
+    throw error;
+  }
   const envProxyUrl = connectionProxyUrl ? null : normalizeProxyUrl(getEnvProxyUrl(targetUrl));
   const proxyUrl = connectionProxyUrl || envProxyUrl;
 
@@ -347,10 +429,10 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
     if (proxyUrl) {
       // Proxy resolves DNS externally (not affected by /etc/hosts) — use proxy directly
       try {
-        return await fetchViaProxy(url, options, proxyUrl, proxyOptions);
+        return await withMihomoProxyDebug({ targetUrl, options, proxyOptions, proxyUrl }, () => fetchViaProxy(url, options, proxyUrl, proxyOptions));
       } catch (proxyError) {
         if (proxyOptions?.strictProxy === true) {
-          throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`);
+          throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`, { cause: proxyError });
         }
         console.warn(`[ProxyFetch] Proxy failed, falling back to direct bypass: ${proxyError.message}`);
       }
@@ -367,11 +449,11 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
 
   if (proxyUrl) {
     try {
-      return await fetchViaProxy(url, options, proxyUrl, proxyOptions);
+      return await withMihomoProxyDebug({ targetUrl, options, proxyOptions, proxyUrl }, () => fetchViaProxy(url, options, proxyUrl, proxyOptions));
     } catch (proxyError) {
       // If strictProxy is enabled, fail hard instead of falling back to direct
       if (proxyOptions?.strictProxy === true) {
-        throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`);
+        throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`, { cause: proxyError });
       }
       console.warn(`[ProxyFetch] Proxy failed, falling back to direct: ${proxyError.message}`);
       return originalFetch(url, options);

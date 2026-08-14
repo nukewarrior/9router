@@ -88,4 +88,22 @@ describe("proxyAwareFetch managed dispatcher", () => {
     })).rejects.toThrow(/no_proxy/i);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it("preserves the original transport error as the strict proxy cause", async () => {
+    const transportError = Object.assign(new TypeError("fetch failed"), {
+      cause: Object.assign(new Error("Connect Timeout Error"), { code: "UND_ERR_CONNECT_TIMEOUT" }),
+    });
+    fetchMock.mockRejectedValue(transportError);
+
+    const thrown = await proxyAwareFetch("https://example.com", {}, {
+      connectionProxyEnabled: true,
+      connectionProxyUrl: "http://router:18080",
+      strictProxy: true,
+      mihomoManaged: true,
+      ephemeralProxyDispatcher: true,
+    }).catch((error) => error);
+
+    expect(thrown.cause).toBe(transportError);
+    expect(thrown.cause.cause.code).toBe("UND_ERR_CONNECT_TIMEOUT");
+  });
 });
