@@ -15,7 +15,7 @@ function makePool(overrides = {}) {
       controllerUrl: "http://192.0.2.10:9090",
       selectorName: "selector",
       samplesPerNode: 2,
-      egressProbeTtlMs: 60000,
+      egressProbeTtlMs: 300000,
       egressProbeUrl: "https://probe.example.test/ip",
       ...overrides,
     },
@@ -121,7 +121,7 @@ describe("Mihomo egress node discovery", () => {
     expect(pool.mihomoState.proxyProviders.subscription.nodes["Example Taiwan Node A"].egress).toMatchObject({
       confidence: "stable",
       identityKey: "4:198.51.100.20",
-      expiresAt: 61000,
+      expiresAt: 301000,
     });
   });
 

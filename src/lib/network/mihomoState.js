@@ -526,6 +526,10 @@ function getCooldownMs(config, previousState, resetsAtMs, nowMs) {
   );
 }
 
+export function getMihomoModelHealthCooldownMs(config, previousState, resetsAtMs = null, nowMs = Date.now()) {
+  return getCooldownMs(normalizeMihomoConfig(config), previousState, resetsAtMs, nowMs);
+}
+
 function normalizeStateContainer(pool) {
   pool.mihomoState = migrateMihomoState(pool.mihomoState);
   return pool.mihomoState.proxyProviders;
