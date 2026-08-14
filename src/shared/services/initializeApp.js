@@ -16,6 +16,10 @@ import {
 import { getMitmStatus, startMitm, loadEncryptedPassword, initDbHooks, restoreToolDNS, removeAllDNSEntriesSync } from "@/mitm/manager";
 import { syncToJson as syncMitmAliasCache } from "@/lib/mitmAliasCache";
 import { killAllBridges } from "@/lib/mcp/stdioSseBridge";
+import {
+  startMihomoMaintenance,
+  stopMihomoMaintenance,
+} from "@/lib/network/mihomoMaintenanceService.js";
 
 // Inject correct paths and DB hooks into manager.js (CJS) from ESM context
 (function bootstrapMitm() {
@@ -55,6 +59,7 @@ export async function initializeApp() {
     // unexpected cloudflared exits are handled even during the deferred window.
     if (!g.signalHandlersRegistered) {
       const cleanup = () => {
+        try { stopMihomoMaintenance(); } catch { /* best effort */ }
         try { removeAllDNSEntriesSync(); } catch { /* best effort */ }
         try { killAllBridges(); } catch { /* best effort */ }
         killCloudflared();
@@ -65,6 +70,12 @@ export async function initializeApp() {
       process.on("exit", () => { try { removeAllDNSEntriesSync(); } catch { /* ignore */ } });
       g.signalHandlersRegistered = true;
     }
+
+    // Mihomo health maintenance starts during immediate initialization. It
+    // owns its unref timer and does not wait for the deferred heavy startup.
+    startMihomoMaintenance().catch((error) => {
+      console.error("[InitApp] Mihomo maintenance startup failed:", error.message);
+    });
 
     setTunnelUnexpectedExitCallback(() => {
       safeRestartTunnel("unexpected-exit").catch(() => {});

@@ -3,6 +3,7 @@ import { createProxyPool, getProviderConnections, getProxyPools } from "@/models
 import { PROXY_POOL_TYPES, isMihomoProxyPool } from "@/lib/network/proxyPoolTypes.js";
 import { normalizeMihomoConfig } from "@/lib/network/mihomoConfig.js";
 import { toPublicProxyPool, toPublicProxyPools } from "@/lib/network/proxyPoolDto.js";
+import { wakeMihomoMaintenance } from "@/lib/network/mihomoMaintenanceService.js";
 
 function toBoolean(value) {
   if (value === "true") return true;
@@ -101,6 +102,9 @@ export async function POST(request) {
     }
 
     const proxyPool = await createProxyPool(normalized);
+    if (isMihomoProxyPool(proxyPool)) {
+      void wakeMihomoMaintenance(proxyPool.id, "pool-created").catch(() => {});
+    }
     return NextResponse.json({ proxyPool: toPublicProxyPool(proxyPool) }, { status: 201 });
   } catch (error) {
     console.log("Error creating proxy pool:", error);

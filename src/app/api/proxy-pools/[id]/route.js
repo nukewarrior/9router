@@ -8,6 +8,10 @@ import {
 import { PROXY_POOL_TYPES, isMihomoProxyPool } from "@/lib/network/proxyPoolTypes.js";
 import { mergeMihomoConfig, normalizeMihomoConfig } from "@/lib/network/mihomoConfig.js";
 import { toPublicProxyPool } from "@/lib/network/proxyPoolDto.js";
+import {
+  removeMihomoMaintenancePool,
+  wakeMihomoMaintenance,
+} from "@/lib/network/mihomoMaintenanceService.js";
 
 function normalizeProxyPoolUpdate(body = {}, existing = {}) {
   const updates = {};
@@ -116,6 +120,11 @@ export async function PUT(request, { params }) {
     }
 
     const updated = await updateProxyPool(id, normalized.updates);
+    if (isMihomoProxyPool(updated) && updated.isActive === true) {
+      void wakeMihomoMaintenance(id, "pool-updated").catch(() => {});
+    } else {
+      removeMihomoMaintenancePool(id);
+    }
     return NextResponse.json({ proxyPool: toPublicProxyPool(updated) });
   } catch (error) {
     console.log("Error updating proxy pool:", error);
@@ -147,6 +156,7 @@ export async function DELETE(request, { params }) {
     }
 
     await deleteProxyPool(id);
+    removeMihomoMaintenancePool(id);
     return NextResponse.json({ success: true });
   } catch (error) {
     console.log("Error deleting proxy pool:", error);

@@ -218,6 +218,7 @@ export async function probeMihomoBusinessEgress({
   requestId = "mihomo-business-probe",
   persist = true,
   onHealthChanged = null,
+  isCurrent = null,
 } = {}) {
   if (!poolId || !modelId || !entry?.identityKey || !Array.isArray(entry.nodes) || entry.nodes.length === 0) {
     throw new TypeError("poolId, modelId and a non-empty egress entry are required");
@@ -355,7 +356,9 @@ export async function probeMihomoBusinessEgress({
   result.backupRetried = errors.length > 0 && Boolean(successfulRoute);
   result.modelId = modelId;
   result.identityKey = entry.identityKey;
-  const persisted = persist
+  const stale = typeof isCurrent === "function" && !(await isCurrent(result));
+  result.stale = stale;
+  const persisted = persist && !stale
     ? await persistResult({
       result,
       poolId,
@@ -376,6 +379,6 @@ export async function probeMihomoBusinessEgress({
       modelId,
     }
     : null;
-  await onHealthChanged?.({ result, persisted: result.persisted });
+  if (!stale) await onHealthChanged?.({ result, persisted: result.persisted });
   return result;
 }

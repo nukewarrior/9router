@@ -281,10 +281,11 @@ export function evaluateEgressProbeSamples(samples = [], {
   };
 }
 
-function createAbortSignal(timeoutMs) {
+function createAbortSignal(timeoutMs, parentSignal = null) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Math.max(1, Number(timeoutMs) || 8000));
-  return { controller, timer };
+  const signal = parentSignal ? AbortSignal.any([parentSignal, controller.signal]) : controller.signal;
+  return { signal, timer };
 }
 
 async function fetchProbeSample({
@@ -292,8 +293,9 @@ async function fetchProbeSample({
   proxyOptions,
   timeoutMs,
   fetchProbe,
+  signal = null,
 }) {
-  const { controller, timer } = createAbortSignal(timeoutMs);
+  const { signal: requestSignal, timer } = createAbortSignal(timeoutMs, signal);
   try {
     const response = await fetchProbe(url, {
       method: "GET",
@@ -302,7 +304,7 @@ async function fetchProbeSample({
         Accept: "text/plain",
         "User-Agent": "9Router-Mihomo-Egress-Discovery",
       },
-      signal: controller.signal,
+      signal: requestSignal,
     }, {
       ...proxyOptions,
       strictProxy: true,
@@ -342,6 +344,8 @@ export async function probeMihomoNodeEgress({
   nowMs = Date.now(),
   selectorLeasePriority = 20,
   signal = null,
+  expectedMappingVersion = null,
+  probeStartedAtMs = nowMs,
 } = {}) {
   const pool = await loadPool(poolId, getPool);
   const config = normalizeMihomoConfig(pool.mihomo || {});
@@ -366,6 +370,7 @@ export async function probeMihomoNodeEgress({
             proxyOptions,
             timeoutMs: config.egressProbeTimeoutMs,
             fetchProbe,
+            signal,
           }));
         } catch (error) {
           errors.push(formatError(error?.name === "AbortError" ? new Error("Egress probe timed out") : error));
@@ -387,9 +392,12 @@ export async function probeMihomoNodeEgress({
     egress,
     mutatePool,
     nowMs,
+    expectedMappingVersion,
+    probeStartedAtMs,
   });
   return {
     ok: egress.successfulSamples > 0,
+    stale: persisted.stale === true,
     route,
     egress,
     samples,

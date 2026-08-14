@@ -38,6 +38,8 @@ function cloneNode(node) {
     mappingVersion: Math.max(0, Math.floor(Number(node?.egress?.mappingVersion ?? node?.mappingVersion) || 0)),
     transportStatus: text(node?.transportStatus) || "unknown",
     transportCooldownUntil: node?.transportCooldownUntil ?? null,
+    transportLastSuccessAt: node?.transportLastSuccessAt ?? null,
+    transportConsecutiveFailures: Math.max(0, Math.floor(Number(node?.transportConsecutiveFailures) || 0)),
   };
 }
 
@@ -101,11 +103,21 @@ function directoryNodes(pool, directory) {
   return nodes;
 }
 
-function sortNodes(nodes) {
+function sortNodes(nodes, nowMs = Date.now()) {
   return [...nodes].sort((left, right) => (
     (left.alive === true ? 0 : left.alive === null ? 1 : 2)
       - (right.alive === true ? 0 : right.alive === null ? 1 : 2)
-    || (left.transportStatus === "cooling" ? 1 : 0) - (right.transportStatus === "cooling" ? 1 : 0)
+    || (nodeTransportCooling({
+      status: left.transportStatus,
+      cooldownUntil: left.transportCooldownUntil,
+    }, nowMs) ? 1 : 0)
+      - (nodeTransportCooling({
+        status: right.transportStatus,
+        cooldownUntil: right.transportCooldownUntil,
+      }, nowMs) ? 1 : 0)
+    || (finiteTime(right.transportLastSuccessAt) ?? Number.NEGATIVE_INFINITY)
+      - (finiteTime(left.transportLastSuccessAt) ?? Number.NEGATIVE_INFINITY)
+    || left.transportConsecutiveFailures - right.transportConsecutiveFailures
     || ((Number.isFinite(Number(left.delayMs)) ? Number(left.delayMs) : Number.MAX_SAFE_INTEGER)
       - (Number.isFinite(Number(right.delayMs)) ? Number(right.delayMs) : Number.MAX_SAFE_INTEGER))
     || left.key.localeCompare(right.key)
@@ -129,6 +141,8 @@ function buildSnapshotValue({ pool, directory, modelId, nowMs }) {
       egress,
       transportStatus: transport.status || "unknown",
       transportCooldownUntil: transport.cooldownUntil || null,
+      transportLastSuccessAt: transport.lastSuccessAt || null,
+      transportConsecutiveFailures: transport.consecutiveFailures || 0,
     });
     const group = grouped.get(egress.identityKey) || {
       identityKey: egress.identityKey,
@@ -143,7 +157,7 @@ function buildSnapshotValue({ pool, directory, modelId, nowMs }) {
 
   const entries = [...grouped.values()]
     .map((group) => {
-      const nodes = sortNodes(group.nodes);
+      const nodes = sortNodes(group.nodes, nowMs);
       const usableNodes = nodes.filter((node) => !nodeTransportCooling({
         status: node.transportStatus,
         cooldownUntil: node.transportCooldownUntil,
@@ -168,6 +182,36 @@ function buildSnapshotValue({ pool, directory, modelId, nowMs }) {
     modelId,
     entries,
   };
+}
+
+export function buildMihomoEgressGroupEntries({ pool, directory = null, nowMs = Date.now() } = {}) {
+  const grouped = new Map();
+  const state = migrateMihomoState(pool?.mihomoState);
+  for (const directoryNode of directoryNodes(pool, directory)) {
+    const egress = getMihomoNodeEgress(pool, directoryNode);
+    if (!isMihomoStableEgress(egress, nowMs)) continue;
+    const persistedNode = nodeState(state, directoryNode);
+    const transport = persistedNode.transport || {};
+    const normalizedNode = cloneNode({
+      ...directoryNode,
+      egress,
+      transportStatus: transport.status || "unknown",
+      transportCooldownUntil: transport.cooldownUntil || null,
+      transportLastSuccessAt: transport.lastSuccessAt || null,
+      transportConsecutiveFailures: transport.consecutiveFailures || 0,
+    });
+    const group = grouped.get(egress.identityKey) || {
+      identityKey: egress.identityKey,
+      ip: egress.ip,
+      family: egress.family,
+      nodes: [],
+    };
+    group.nodes.push(normalizedNode);
+    grouped.set(egress.identityKey, group);
+  }
+  return [...grouped.values()]
+    .map((group) => ({ ...group, nodes: sortNodes(group.nodes, nowMs) }))
+    .sort((left, right) => left.identityKey.localeCompare(right.identityKey));
 }
 
 export function buildHealthyMihomoSnapshot({ pool, directory = null, modelId, nowMs = Date.now() } = {}) {

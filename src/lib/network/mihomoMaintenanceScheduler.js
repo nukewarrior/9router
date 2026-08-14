@@ -202,6 +202,7 @@ export function createMihomoMaintenanceScheduler({
     }
 
     const current = entries.get(entry.key);
+    const completion = entry.completion;
     if (current === entry) {
       const finishedAt = now();
       entry.lastResult = result || null;
@@ -230,6 +231,7 @@ export function createMihomoMaintenanceScheduler({
     scheduleNext(lane);
     if (pendingEntries(lane).length > 0) scheduleLane(lane, 0);
     resolveIdle();
+    completion?.resolve?.({ result, error: failure, stale: entry.stale === true });
   }
 
   function enqueue(job = {}) {
@@ -238,7 +240,13 @@ export function createMihomoMaintenanceScheduler({
     const nowMs = now();
     const existing = entries.get(key);
     if (existing?.status === "pending" || existing?.status === "running") {
-      return { queued: false, reason: "duplicate", key, status: existing.status };
+      return {
+        queued: false,
+        reason: "duplicate",
+        key,
+        status: existing.status,
+        completion: existing.completion?.promise,
+      };
     }
     if (existing && existing.nextAttemptAt > nowMs && job.force !== true) {
       return { queued: false, reason: "backoff", key, nextAttemptAt: existing.nextAttemptAt };
@@ -254,6 +262,11 @@ export function createMihomoMaintenanceScheduler({
       lastResult: null,
       stale: false,
     };
+    let resolveCompletion;
+    const promise = new Promise((resolve) => {
+      resolveCompletion = resolve;
+    });
+    entry.completion = { promise, resolve: resolveCompletion };
     entry.job = { ...job, key };
     entry.priority = priorityForJob(entry.job);
     entry.enqueuedAt = sequence++;
@@ -271,6 +284,7 @@ export function createMihomoMaintenanceScheduler({
       key,
       priority: entry.priority,
       selectorKey: lane.key,
+      completion: entry.completion.promise,
     };
   }
 
@@ -283,6 +297,7 @@ export function createMihomoMaintenanceScheduler({
       cleanupLane(lane);
     }
     entries.delete(key);
+    entry.completion?.resolve?.({ canceled: true });
     resolveIdle();
     return true;
   }
@@ -299,6 +314,7 @@ export function createMihomoMaintenanceScheduler({
     for (const timer of timers.values()) cancel(timer);
     timers.clear();
     microtaskScheduled = new Set();
+    for (const entry of entries.values()) entry.completion?.resolve?.({ canceled: true });
     entries.clear();
     for (const lane of lanes.values()) lane.pending.length = 0;
     lanes.clear();
