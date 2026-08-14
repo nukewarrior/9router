@@ -340,6 +340,8 @@ export async function probeMihomoNodeEgress({
   fetchProbe = proxyAwareFetch,
   mutatePool,
   nowMs = Date.now(),
+  selectorLeasePriority = 20,
+  signal = null,
 } = {}) {
   const pool = await loadPool(poolId, getPool);
   const config = normalizeMihomoConfig(pool.mihomo || {});
@@ -353,6 +355,8 @@ export async function probeMihomoNodeEgress({
       nodeName,
       route,
       getPool,
+      priority: selectorLeasePriority,
+      signal,
       ...(makeClient ? { makeClient } : {}),
     }, async (proxyOptions) => {
       for (let index = 0; index < config.samplesPerNode; index += 1) {

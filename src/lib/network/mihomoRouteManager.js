@@ -91,6 +91,8 @@ export async function withMihomoSelectorLease({
   route = {},
   getPool = getProxyPoolById,
   makeClient = createMihomoClient,
+  priority = 0,
+  signal = null,
 }, callback) {
   if (typeof callback !== "function") throw new TypeError("Mihomo selector lease callback is required");
   const { pool, config } = await loadManagedPool(poolId, getPool);
@@ -163,7 +165,7 @@ export async function withMihomoSelectorLease({
     };
 
     return callback(runtimeProxyOptions, publicRoute);
-  });
+  }, { priority, signal });
 }
 
 export function getMihomoSelectorMutexSize() {

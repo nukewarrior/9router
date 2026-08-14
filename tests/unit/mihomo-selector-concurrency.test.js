@@ -76,4 +76,43 @@ describe("Mihomo Selector lease", () => {
       makeClient: () => fakeClient,
     }, async () => "unreachable")).rejects.toMatchObject({ code: "MIHOMO_SELECTOR_SWITCH_FAILED" });
   });
+
+  it("lets a queued request run before later maintenance leases", async () => {
+    const events = [];
+    let selectedNode = null;
+    let releaseMaintenance;
+    const maintenanceGate = new Promise((resolve) => { releaseMaintenance = resolve; });
+    const client = {
+      selectProxy: vi.fn(async (_selector, node) => {
+        selectedNode = node;
+        events.push(`PUT:${node}`);
+      }),
+      getProxy: vi.fn(async () => ({ type: "Selector", now: selectedNode })),
+    };
+    const options = (nodeName, priority) => ({
+      poolId: "pool-1",
+      nodeName,
+      priority,
+      getPool: async () => pool(),
+      makeClient: () => client,
+    });
+
+    const first = withMihomoSelectorLease(options("A", 20), async () => {
+      events.push("CALLBACK:A");
+      await maintenanceGate;
+    });
+    await tick();
+    const secondMaintenance = withMihomoSelectorLease(options("B", 20), async (_proxyOptions, route) => {
+      events.push(`CALLBACK:${route.nodeName}`);
+    });
+    const request = withMihomoSelectorLease(options("C", 0), async (_proxyOptions, route) => {
+      events.push(`CALLBACK:${route.nodeName}`);
+    });
+
+    releaseMaintenance();
+    await Promise.all([first, secondMaintenance, request]);
+    expect(events).toEqual([
+      "PUT:A", "CALLBACK:A", "PUT:C", "CALLBACK:C", "PUT:B", "CALLBACK:B",
+    ]);
+  });
 });
