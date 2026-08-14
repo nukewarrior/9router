@@ -108,6 +108,8 @@ export MIHOMO_EXPECTED_DISTINCT_NODES="Example Japan Node A"
 node scripts/validate-mihomo.mjs
 ```
 
+脚本只允许切换测试 Selector；无论验证成功或失败，结束时都会恢复运行前的 `Selector.now`，恢复失败则以失败退出。
+
 验收应确认：
 
 1. Controller `/version`、Selector 和 Provider leaf 均可读。

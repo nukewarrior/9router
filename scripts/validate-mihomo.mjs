@@ -269,50 +269,65 @@ async function main() {
   console.log(`[MIHOMO] Controller version=${version?.version || "unknown"} selector="${selectorName}" candidates=${nodes.length}`);
   if (providerNames.length > 0) console.log(`[MIHOMO] provider(s)=${providerNames.join(", ")}`);
 
-  const observedByNode = new Map();
-  for (const node of targets) {
-    await client.selectProxy(selectorName, node.nodeName);
-    const selected = await client.getProxy(selectorName);
-    assertCondition(selected?.now === node.nodeName, `Selector verify failed for node: ${node.nodeName}`);
+  const originalSelectorNode = selector.now;
+  try {
+    const observedByNode = new Map();
+    for (const node of targets) {
+      await client.selectProxy(selectorName, node.nodeName);
+      const selected = await client.getProxy(selectorName);
+      assertCondition(selected?.now === node.nodeName, `Selector verify failed for node: ${node.nodeName}`);
 
-    const echo = await fetchViaListener(listenerUrl, echoUrl, timeoutMs);
-    assertCondition(echo.ok, `IP echo failed through node ${node.nodeName}: HTTP ${echo.status}`);
-    const ip = echo.ip || extractEchoIp(echo.body);
-    assertCondition(ip, `IP echo did not return a valid IP for node: ${node.nodeName}`);
-    observedByNode.set(node.nodeName, { ip });
-    console.log(`[MIHOMO] node="${node.nodeName}" listenerStatus=${echo.status} egress=${redactIp(ip)}`);
+      const echo = await fetchViaListener(listenerUrl, echoUrl, timeoutMs);
+      assertCondition(echo.ok, `IP echo failed through node ${node.nodeName}: HTTP ${echo.status}`);
+      const ip = echo.ip || extractEchoIp(echo.body);
+      assertCondition(ip, `IP echo did not return a valid IP for node: ${node.nodeName}`);
+      observedByNode.set(node.nodeName, { ip });
+      console.log(`[MIHOMO] node="${node.nodeName}" listenerStatus=${echo.status} egress=${redactIp(ip)}`);
+    }
+
+    const groups = new Map();
+    for (const [nodeName, observed] of observedByNode) {
+      const members = groups.get(observed.ip) || [];
+      members.push(nodeName);
+      groups.set(observed.ip, members);
+    }
+    console.log(`[MIHOMO] observed egress groups=${[...groups.entries()].map(([ip, members]) => `${redactIp(ip)}:${members.length}`).join(", ")}`);
+    assertCondition(expectedSameNodes.every((nodeName) => observedByNode.has(nodeName)), "MIHOMO_EXPECTED_SAME_IP_NODES must be included in MIHOMO_NODE_NAMES");
+    assertCondition(expectedDistinctNodes.every((nodeName) => observedByNode.has(nodeName)), "MIHOMO_EXPECTED_DISTINCT_NODES must be included in MIHOMO_NODE_NAMES");
+    if (expectedSameNodes.length > 1) {
+      assertCondition(new Set(expectedSameNodes.map((nodeName) => observedByNode.get(nodeName).ip)).size === 1, "Expected same-IP nodes did not share an observed egress");
+    }
+    if (expectedDistinctNodes.length > 1) {
+      assertCondition(new Set(expectedDistinctNodes.map((nodeName) => observedByNode.get(nodeName).ip)).size === expectedDistinctNodes.length, "Expected distinct-IP nodes shared an observed egress");
+    }
+
+    const connections = await client.getConnections();
+    const connectionList = Array.isArray(connections) ? connections : connections?.connections;
+    console.log(`[MIHOMO] /connections reachable active=${Array.isArray(connectionList) ? connectionList.length : "unknown"}`);
+
+    const failureListenerUrl = env("MIHOMO_FAILURE_LISTENER_URL");
+    if (failureListenerUrl) {
+      const failedClosed = await expectListenerFailure(failureListenerUrl, echoUrl, timeoutMs);
+      assertCondition(failedClosed, "Fail-closed check failed: bad listener unexpectedly returned a successful response");
+      console.log("[MIHOMO] fail-closed listener check passed");
+    }
+
+    await validateRouterHealth({ observedByNode, expectedSameNodes, expectedDistinctNodes });
+
+    console.log("[MIHOMO] real environment validation passed");
+  } finally {
+    if (originalSelectorNode) {
+      try {
+        await client.selectProxy(selectorName, originalSelectorNode);
+        const restored = await client.getProxy(selectorName);
+        assertCondition(restored?.now === originalSelectorNode, `Selector restore failed: expected ${originalSelectorNode}`);
+        console.log(`[MIHOMO] restored selector="${selectorName}" node="${originalSelectorNode}"`);
+      } catch (error) {
+        console.error(`[MIHOMO] selector restore failed: ${safeError(error, secret)}`);
+        process.exitCode = 1;
+      }
+    }
   }
-
-  const groups = new Map();
-  for (const [nodeName, observed] of observedByNode) {
-    const members = groups.get(observed.ip) || [];
-    members.push(nodeName);
-    groups.set(observed.ip, members);
-  }
-  console.log(`[MIHOMO] observed egress groups=${[...groups.entries()].map(([ip, members]) => `${redactIp(ip)}:${members.length}`).join(", ")}`);
-  assertCondition(expectedSameNodes.every((nodeName) => observedByNode.has(nodeName)), "MIHOMO_EXPECTED_SAME_IP_NODES must be included in MIHOMO_NODE_NAMES");
-  assertCondition(expectedDistinctNodes.every((nodeName) => observedByNode.has(nodeName)), "MIHOMO_EXPECTED_DISTINCT_NODES must be included in MIHOMO_NODE_NAMES");
-  if (expectedSameNodes.length > 1) {
-    assertCondition(new Set(expectedSameNodes.map((nodeName) => observedByNode.get(nodeName).ip)).size === 1, "Expected same-IP nodes did not share an observed egress");
-  }
-  if (expectedDistinctNodes.length > 1) {
-    assertCondition(new Set(expectedDistinctNodes.map((nodeName) => observedByNode.get(nodeName).ip)).size === expectedDistinctNodes.length, "Expected distinct-IP nodes shared an observed egress");
-  }
-
-  const connections = await client.getConnections();
-  const connectionList = Array.isArray(connections) ? connections : connections?.connections;
-  console.log(`[MIHOMO] /connections reachable active=${Array.isArray(connectionList) ? connectionList.length : "unknown"}`);
-
-  const failureListenerUrl = env("MIHOMO_FAILURE_LISTENER_URL");
-  if (failureListenerUrl) {
-    const failedClosed = await expectListenerFailure(failureListenerUrl, echoUrl, timeoutMs);
-    assertCondition(failedClosed, "Fail-closed check failed: bad listener unexpectedly returned a successful response");
-    console.log("[MIHOMO] fail-closed listener check passed");
-  }
-
-  await validateRouterHealth({ observedByNode, expectedSameNodes, expectedDistinctNodes });
-
-  console.log("[MIHOMO] real environment validation passed");
 }
 
 main().catch((error) => {
