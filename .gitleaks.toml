@@ -1,0 +1,71 @@
+title = "9Router repository secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Static public OAuth client metadata required by provider integrations"
+paths = [
+  '''^open-sse/providers/shared\.js$''',
+  '''^open-sse/providers/registry/(antigravity|gemini-cli|gemini|iflow)\.js$''',
+  '''^open-sse/providers/registry/windsurf\.js$''',
+  '''^src/lib/oauth/constants/oauth\.js$''',
+  '''^tests/__baseline__/providers-baseline\.json$''',
+  '''^tests/unit/antigravity-oauth-client\.test\.js$''',
+]
+regexTarget = "line"
+regexes = [
+  '''clientSecret''',
+  '''firebaseApiKey''',
+  '''Anthropic-Beta''',
+]
+
+[[allowlists]]
+description = "Static Edge TTS protocol parameter, not an account credential"
+paths = [
+  '''^open-sse/handlers/ttsProviders/edgeTts\.js$''',
+]
+regexTarget = "line"
+regexes = [
+  '''TrustedClientToken''',
+]
+
+[[allowlists]]
+description = "Historical static Edge TTS protocol parameter"
+paths = [
+  '''^open-sse/handlers/ttsCore\.js$''',
+]
+regexTarget = "line"
+regexes = [
+  '''(?i)trustedclienttoken''',
+]
+
+[[allowlists]]
+description = "Historical Claude client header fixture"
+paths = [
+  '''^tests/unit/claude-header-forwarding\.test\.js$''',
+]
+regexTarget = "line"
+regexes = [
+  '''anthropic-beta''',
+]
+
+[[allowlists]]
+description = "Historical dummy API key fixture"
+paths = [
+  '''^tests/unit/embeddings\.cloud\.test\.js$''',
+]
+regexTarget = "line"
+regexes = [
+  '''VALID_API_KEY''',
+]
+
+[[allowlists]]
+description = "Historical documentation auth placeholders"
+paths = [
+  '''^gitbook/content/(en|es|ja|vi|zh-CN)/(features/(combos|quota-tracking)|getting-started/installation|integration/other-tools|troubleshooting)\.md$''',
+]
+regexTarget = "line"
+regexes = [
+  '''Authorization: Bearer (your-api-key|9r_your_key|your-api-key-from-dashboard)''',
+]
