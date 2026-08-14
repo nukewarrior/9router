@@ -5,6 +5,12 @@ import { isMihomoProxyPool } from "./proxyPoolTypes.js";
 import { mihomoSelectorMutex } from "./keyedMutex.js";
 import { enqueueMihomoEgressProbe, getMihomoEgressProbeReason } from "./mihomoEgressScheduler.js";
 import {
+  createMihomoDebugContext,
+  createMihomoDebugId,
+  mihomoDebug,
+  mihomoErrorFields,
+} from "open-sse/utils/mihomoDebug.js";
+import {
   attachMihomoNodeEgress,
   discoverMihomoNodeDirectory,
   getMihomoEgressBusinessState,
@@ -24,7 +30,7 @@ function selectorKey(controllerUrl, selectorName) {
 
 export class MihomoRouteError extends Error {
   constructor(code, message, details = {}) {
-    super(message);
+    super(message, details?.cause ? { cause: details.cause } : undefined);
     this.name = "MihomoRouteError";
     this.code = code;
     Object.assign(this, details);
@@ -89,6 +95,7 @@ export async function withMihomoSelectorLease({
   if (typeof callback !== "function") throw new TypeError("Mihomo selector lease callback is required");
   const { pool, config } = await loadManagedPool(poolId, getPool);
   const mutexKey = selectorKey(config.controllerUrl, config.selectorName);
+  const debugContext = createMihomoDebugContext(route);
 
   return mihomoSelectorMutex.runExclusive(mutexKey, async () => {
     const client = makeClient({
@@ -97,12 +104,41 @@ export async function withMihomoSelectorLease({
       timeoutMs: config.controllerTimeoutMs,
     });
 
+    const selectStartedAt = Date.now();
+    mihomoDebug("controller.select.start", debugContext, {
+      selector: config.selectorName,
+      node: nodeName,
+    });
     try {
       await client.selectProxy(config.selectorName, nodeName);
+    } catch (error) {
+      mihomoDebug("controller.select.failed", debugContext, {
+        selector: config.selectorName,
+        node: nodeName,
+        elapsed: Date.now() - selectStartedAt,
+        ...mihomoErrorFields(error),
+      });
+      throw error;
+    }
+    mihomoDebug("controller.select.ok", debugContext, {
+      elapsed: Date.now() - selectStartedAt,
+    });
+
+    const verifyStartedAt = Date.now();
+    try {
       const selected = await client.getProxy(config.selectorName);
       verifySelector(selected, config.selectorName, nodeName);
+      mihomoDebug("controller.verify.ok", debugContext, {
+        selected: text(selected?.now) || nodeName,
+        elapsed: Date.now() - verifyStartedAt,
+      });
     } catch (error) {
-      if (error instanceof MihomoRouteError) throw error;
+      mihomoDebug("controller.verify.failed", debugContext, {
+        expected: nodeName,
+        actual: text(error?.selectedNodeName) || "unknown",
+        elapsed: Date.now() - verifyStartedAt,
+        ...mihomoErrorFields(error),
+      });
       throw error;
     }
 
@@ -123,6 +159,7 @@ export async function withMihomoSelectorLease({
       ephemeralProxyDispatcher: true,
       mihomoManaged: true,
       connectionProxyPoolId: pool.id,
+      mihomoDebugContext: debugContext,
     };
 
     return callback(runtimeProxyOptions, publicRoute);
@@ -171,12 +208,14 @@ export function buildMihomoRoute({
   egressIdentityKey: identityKey = null,
   egressConfidence = "unknown",
   egressSnapshot = null,
+  requestId = null,
+  maxAttempts = null,
 }) {
   const startedAtMs = Number.isFinite(Number(attemptStartedAtMs)) ? Number(attemptStartedAtMs) : Date.now();
   const routeEgressSnapshot = egressSnapshot && typeof egressSnapshot === "object" && !Array.isArray(egressSnapshot)
     ? egressSnapshot
     : null;
-  return {
+  const route = {
     proxyPoolId,
     proxyProvider: proxyProvider || null,
     nodeName,
@@ -195,6 +234,9 @@ export function buildMihomoRoute({
     attemptStartedAtMs: startedAtMs,
     routeId: routeId || `${proxyPoolId}:${nodeName}:${Date.now()}`,
   };
+  if (requestId) route.requestId = requestId;
+  if (Number.isFinite(Number(maxAttempts))) route.maxAttempts = Number(maxAttempts);
+  return route;
 }
 
 function parseCooldownUntil(state) {
@@ -320,6 +362,48 @@ function earliestCooldownUntil(pool, nodes, businessProviderId, config, nowMs) {
   return earliest ? new Date(earliest).toISOString() : null;
 }
 
+function buildCandidateDebugStats(pool, directory, availableNodes, businessProviderId, config, nowMs) {
+  const stableEgresses = new Set();
+  const coolingEgresses = new Set();
+  let coolingNodes = 0;
+  let unknownEgress = 0;
+
+  for (const node of directory.nodes) {
+    try {
+      if (parseCooldownUntil(getMihomoNodeBusinessState(pool, node, businessProviderId)) > nowMs) coolingNodes += 1;
+    } catch {
+      // Diagnostics must never make an otherwise valid route unavailable.
+    }
+    if (!isMihomoStableEgress(node.egress, nowMs)) {
+      unknownEgress += 1;
+      continue;
+    }
+    stableEgresses.add(node.egress.identityKey);
+    if (config.egressScopedCooldown === true) {
+      try {
+        if (parseCooldownUntil(getMihomoEgressBusinessState(pool, node.egress.identityKey, businessProviderId)) > nowMs) {
+          coolingEgresses.add(node.egress.identityKey);
+        }
+      } catch {
+        // Diagnostics must never make an otherwise valid route unavailable.
+      }
+    }
+  }
+
+  return {
+    total: directory.nodes.length,
+    eligible: availableNodes.length,
+    coolingNodes,
+    coolingEgress: coolingEgresses.size,
+    distinctEgress: stableEgresses.size,
+    unknownEgress,
+    regionOrder: (config.regionOrder || []).join(",") || "none",
+    providerFilter: config.providerNames?.length > 0 ? "enabled" : "disabled",
+    includeRegex: config.includeRegex ? "enabled" : "disabled",
+    excludeRegex: config.excludeRegex ? "enabled" : "disabled",
+  };
+}
+
 /**
  * Discover and choose one node for a request. The routeContext is deliberately
  * request-scoped; only the fairness cursor lives in process memory.
@@ -337,7 +421,22 @@ export async function prepareMihomoRouteAttempt({
     throw new TypeError("routeContext must contain attemptedNodeKeys and deprioritizedRegions sets");
   }
   if (!(routeContext.attemptedEgressKeys instanceof Set)) routeContext.attemptedEgressKeys = new Set();
+  if (!routeContext.requestId) routeContext.requestId = createMihomoDebugId();
+  if (!routeContext.routeId) routeContext.routeId = createMihomoDebugId();
   const { pool, config } = await loadManagedPool(poolId, getPool);
+  const prepareDebugContext = createMihomoDebugContext({
+    requestId: routeContext.requestId,
+    routeId: routeContext.routeId,
+  });
+  mihomoDebug("prepare", prepareDebugContext, {
+    pool: poolId,
+    selector: config.selectorName,
+    maxAttempts: config.maxAttemptsPerRequest,
+    businessProvider: businessProviderId,
+    providerFilter: config.providerNames?.length > 0 ? "enabled" : "disabled",
+    includeRegex: config.includeRegex ? "enabled" : "disabled",
+    excludeRegex: config.excludeRegex ? "enabled" : "disabled",
+  });
   const client = makeClient({
     controllerUrl: config.controllerUrl,
     secret: config.controllerSecret,
@@ -400,6 +499,10 @@ export async function prepareMihomoRouteAttempt({
   }
 
   const effectiveMaxAttempts = routeContext.maxAttempts;
+  mihomoDebug("candidates", {
+    ...prepareDebugContext,
+    maxAttempts: effectiveMaxAttempts,
+  }, buildCandidateDebugStats(pool, directory, availableNodes, businessProviderId, config, nowMs));
   if (routeContext.attempts >= effectiveMaxAttempts) {
     return {
       route: null,
@@ -429,6 +532,25 @@ export async function prepareMihomoRouteAttempt({
   routeContext.attemptedNodeKeys.add(candidate.key);
   const candidateEgressKey = selectedCandidate.egressKey || getMihomoEgressCandidateKey(candidate, nowMs);
   if (config.preferDistinctEgress) routeContext.attemptedEgressKeys.add(candidateEgressKey);
+  const selectedNodeState = getMihomoNodeBusinessState(pool, candidate, businessProviderId);
+  const selectedEgressState = isMihomoStableEgress(candidate.egress, nowMs)
+    ? getMihomoEgressBusinessState(pool, candidate.egress.identityKey, businessProviderId)
+    : null;
+  const attemptDebugContext = createMihomoDebugContext({
+    requestId: routeContext.requestId,
+    routeId: routeContext.routeId,
+    attempt: routeContext.attempts,
+    maxAttempts: effectiveMaxAttempts,
+  });
+  mihomoDebug("selected", attemptDebugContext, {
+    node: candidate.nodeName,
+    region: candidate.region,
+    egress: candidate.egress?.identityKey || "unknown",
+    egressConfidence: candidate.egress?.confidence || "unknown",
+    egressFresh: isMihomoStableEgress(candidate.egress, nowMs),
+    nodeCooldownUntil: selectedNodeState.cooldownUntil || null,
+    egressCooldownUntil: selectedEgressState?.cooldownUntil || null,
+  });
   const shadowRoute = shadowCandidate?.node
     ? buildMihomoRoute({
       proxyPoolId: poolId,
@@ -437,6 +559,9 @@ export async function prepareMihomoRouteAttempt({
       region: shadowCandidate.node.region,
       selectorName: directory.selectorName || config.selectorName,
       attempt: routeContext.attempts,
+      requestId: routeContext.requestId,
+      routeId: routeContext.routeId,
+      maxAttempts: effectiveMaxAttempts,
       attemptStartedAtMs: nowMs,
       egressIdentityKey: shadowCandidate.egressKey,
       egressConfidence: shadowCandidate.node.egress?.confidence,
@@ -455,6 +580,9 @@ export async function prepareMihomoRouteAttempt({
       region: candidate.region,
       selectorName: directory.selectorName || config.selectorName,
       attempt: routeContext.attempts,
+      requestId: routeContext.requestId,
+      routeId: routeContext.routeId,
+      maxAttempts: effectiveMaxAttempts,
       attemptStartedAtMs: nowMs,
       egressIdentityKey: candidateEgressKey,
       egressConfidence: candidate.egress?.confidence,

@@ -58,6 +58,9 @@ describe("Mihomo route candidate selection", () => {
     expect(first.route.region).toBe("TW");
     expect(second.route.region).toBe("JP");
     expect(second.route.nodeName).toBe("Example Japan Node A");
+    expect(first.route.requestId).toBe(context.requestId);
+    expect(second.route.requestId).toBe(first.route.requestId);
+    expect(second.route.routeId).toBe(first.route.routeId);
   });
 
   it("allows a deprioritized region only when other regions have no eligible nodes", async () => {
