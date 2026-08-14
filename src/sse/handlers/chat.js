@@ -30,7 +30,14 @@ import {
   recordMihomoRouteFailure,
   recordMihomoRouteSuccess,
 } from "@/lib/network/mihomoState.js";
-import { isIpCandidateRateLimitError } from "open-sse/services/errorClassification.js";
+import { classifyRateLimitError, isIpCandidateRateLimitError } from "open-sse/services/errorClassification.js";
+import {
+  createMihomoDebugContext,
+  createMihomoDebugId,
+  mihomoDebug,
+  mihomoErrorFields,
+  resolveMihomoRequestId,
+} from "open-sse/utils/mihomoDebug.js";
 
 /**
  * Handle chat completion request
@@ -217,6 +224,24 @@ function mihomoErrorResponse(error) {
   return errorResponse(status, `[${code}] ${error?.message || "Mihomo route failed"}`);
 }
 
+function mihomoRouteDebugContext(routeContext, route = null) {
+  return createMihomoDebugContext({
+    requestId: route?.requestId || routeContext.requestId,
+    routeId: route?.routeId || routeContext.routeId,
+    attempt: route?.attempt,
+    maxAttempts: route?.maxAttempts || routeContext.maxAttempts,
+  });
+}
+
+function mihomoRouteEgress(route) {
+  return route?.egressIdentityKey || route?.egressSnapshot?.identityKey || "unknown";
+}
+
+function isMihomoTransportFailure(result) {
+  if (Number(result?.status) !== HTTP_STATUS.BAD_GATEWAY) return false;
+  return /(fetch failed|proxy required|und_err_|econn|etimedout|timeout)/i.test(String(result?.error || ""));
+}
+
 export async function executeMihomoNoAuthRoute({
   body,
   provider,
@@ -236,15 +261,19 @@ export async function executeMihomoNoAuthRoute({
   const recordFailure = deps.recordFailure || recordMihomoRouteFailure;
   const recordSuccess = deps.recordSuccess || recordMihomoRouteSuccess;
   const executeAttempt = deps.executeAttempt || executeChatCoreAttempt;
+  const requestStartedAt = Date.now();
 
   const routeContext = {
     attemptedNodeKeys: new Set(),
     attemptedEgressKeys: new Set(),
     deprioritizedRegions: new Set(),
     attempts: 0,
+    requestId: resolveMihomoRequestId({ request, clientRawRequest, body }),
+    routeId: createMihomoDebugId(),
   };
   let lastResult = null;
   let lastPrepared = null;
+  let lastRoute = null;
   let lastRateLimitUntil = null;
 
   while (true) {
@@ -256,12 +285,23 @@ export async function executeMihomoNoAuthRoute({
         routeContext,
       });
     } catch (error) {
+      mihomoDebug("prepare.failed", mihomoRouteDebugContext(routeContext), {
+        elapsed: Date.now() - requestStartedAt,
+        ...mihomoErrorFields(error),
+      });
+      mihomoDebug("complete", mihomoRouteDebugContext(routeContext), {
+        result: "failed",
+        attempts: routeContext.attempts,
+        finalStatus: HTTP_STATUS.BAD_GATEWAY,
+        elapsed: Date.now() - requestStartedAt,
+      });
       return mihomoErrorResponse(error);
     }
     lastPrepared = prepared;
     if (!prepared.route) break;
 
     const route = prepared.route;
+    lastRoute = route;
     log.info("MIHOMO", `pool=${poolId} selector="${route.selectorName}" attempt=${route.attempt}/${prepared.effectiveMaxAttempts} node="${route.nodeName}" region=${route.region}`);
     if (prepared.shadowRoute && prepared.shadowRoute.nodeName !== route.nodeName) {
       log.debug("MIHOMO", `shadow egress candidate node="${prepared.shadowRoute.nodeName}" identity="${prepared.shadowRoute.egressIdentityKey || "unknown"}"`);
@@ -287,6 +327,19 @@ export async function executeMihomoNoAuthRoute({
     } catch (error) {
       // Controller and Selector failures are control-plane failures, not node
       // failures. Never mark a candidate or continue with an unknown Selector.
+      mihomoDebug("route.failed", mihomoRouteDebugContext(routeContext, route), {
+        phase: "controller",
+        elapsed: Date.now() - route.attemptStartedAtMs,
+        ...mihomoErrorFields(error),
+      });
+      mihomoDebug("complete", mihomoRouteDebugContext(routeContext, route), {
+        result: "failed",
+        attempts: routeContext.attempts,
+        finalStatus: HTTP_STATUS.BAD_GATEWAY,
+        finalNode: route.nodeName,
+        finalEgress: mihomoRouteEgress(route),
+        elapsed: Date.now() - requestStartedAt,
+      });
       return mihomoErrorResponse(error);
     }
 
@@ -294,16 +347,58 @@ export async function executeMihomoNoAuthRoute({
       try {
         await recordSuccess({ proxyPoolId: poolId, route, businessProviderId: provider });
       } catch (error) {
+        mihomoDebug("route.success_record_failed", mihomoRouteDebugContext(routeContext, route), {
+          ...mihomoErrorFields(error),
+        });
+        mihomoDebug("complete", mihomoRouteDebugContext(routeContext, route), {
+          result: "failed",
+          attempts: routeContext.attempts,
+          finalStatus: HTTP_STATUS.BAD_GATEWAY,
+          finalNode: route.nodeName,
+          finalEgress: mihomoRouteEgress(route),
+          elapsed: Date.now() - requestStartedAt,
+        });
         return mihomoErrorResponse(error);
       }
       log.info("MIHOMO", `success node="${route.nodeName}" region=${route.region}`);
+      mihomoDebug("complete", mihomoRouteDebugContext(routeContext, route), {
+        result: "success",
+        attempts: routeContext.attempts,
+        finalNode: route.nodeName,
+        finalEgress: mihomoRouteEgress(route),
+        elapsed: Date.now() - requestStartedAt,
+      });
       return result.response;
     }
 
     lastResult = result;
-    if (!isIpCandidateRateLimitError(result.status, result.error)) {
+    const classification = classifyRateLimitError(result.status, result.error);
+    const isRetryCandidate = isIpCandidateRateLimitError(result.status, result.error);
+    const failureTag = isMihomoTransportFailure(result) ? "transport_failure" : "upstream_failure";
+    mihomoDebug(failureTag, mihomoRouteDebugContext(routeContext, route), {
+      status: result.status || "unknown",
+      node: route.nodeName,
+      egress: mihomoRouteEgress(route),
+      classification,
+      retryable: isRetryCandidate,
+    });
+    if (!isRetryCandidate) {
       // 400/401/404, listener failures, and generic 5xx retain existing
       // executor semantics and do not trigger node rotation.
+      mihomoDebug("decision", mihomoRouteDebugContext(routeContext, route), {
+        failureType: classification || (failureTag === "transport_failure" ? "transport_error" : "non_rate_limit"),
+        retryable: false,
+        cooldownScope: "none",
+        next: "return_error",
+      });
+      mihomoDebug("complete", mihomoRouteDebugContext(routeContext, route), {
+        result: "failed",
+        attempts: routeContext.attempts,
+        finalStatus: result.status || "unknown",
+        finalNode: route.nodeName,
+        finalEgress: mihomoRouteEgress(route),
+        elapsed: Date.now() - requestStartedAt,
+      });
       return result.response;
     }
 
@@ -317,7 +412,23 @@ export async function executeMihomoNoAuthRoute({
         error: result.error,
         resetsAtMs: result.resetsAtMs,
       });
-      if (!failure.updated) return result.response;
+      if (!failure.updated) {
+        mihomoDebug("decision", mihomoRouteDebugContext(routeContext, route), {
+          failureType: classification || "rate_limit",
+          retryable: false,
+          cooldownScope: "none",
+          next: "return_error",
+        });
+        mihomoDebug("complete", mihomoRouteDebugContext(routeContext, route), {
+          result: "failed",
+          attempts: routeContext.attempts,
+          finalStatus: result.status || "unknown",
+          finalNode: route.nodeName,
+          finalEgress: mihomoRouteEgress(route),
+          elapsed: Date.now() - requestStartedAt,
+        });
+        return result.response;
+      }
       const cooldownMs = Number(failure.cooldownMs);
       if (Number.isFinite(cooldownMs) && cooldownMs >= 0) {
         lastRateLimitUntil = new Date(Date.now() + cooldownMs).toISOString();
@@ -328,7 +439,42 @@ export async function executeMihomoNoAuthRoute({
       } else {
         log.info("MIHOMO", `node cooldown=${Math.ceil(failure.cooldownMs / 1000)}s node="${route.nodeName}"`);
       }
+      mihomoDebug("cooldown", mihomoRouteDebugContext(routeContext, route), {
+        scope: failure.scope || "none",
+        node: failure.scope === "node" ? route.nodeName : null,
+        identity: failure.scope === "egress" ? failure.identityKey : null,
+        duration: Number.isFinite(cooldownMs) ? cooldownMs : null,
+        until: lastRateLimitUntil,
+        reason: failure.lastErrorType || classification || "rate_limit",
+      });
+      mihomoDebug("decision", mihomoRouteDebugContext(routeContext, route), {
+        failureType: failure.lastErrorType || classification || "rate_limit",
+        retryable: true,
+        cooldownScope: failure.scope || "none",
+        next: "retry",
+      });
+      mihomoDebug("retry", mihomoRouteDebugContext(routeContext, route), {
+        nextAttempt: routeContext.attempts + 1,
+        reason: failure.lastErrorType || classification || "rate_limit",
+      });
     } catch (error) {
+      mihomoDebug("cooldown.failed", mihomoRouteDebugContext(routeContext, route), {
+        ...mihomoErrorFields(error),
+      });
+      mihomoDebug("decision", mihomoRouteDebugContext(routeContext, route), {
+        failureType: classification || "rate_limit",
+        retryable: false,
+        cooldownScope: "none",
+        next: "return_error",
+      });
+      mihomoDebug("complete", mihomoRouteDebugContext(routeContext, route), {
+        result: "failed",
+        attempts: routeContext.attempts,
+        finalStatus: HTTP_STATUS.BAD_GATEWAY,
+        finalNode: route.nodeName,
+        finalEgress: mihomoRouteEgress(route),
+        elapsed: Date.now() - requestStartedAt,
+      });
       return mihomoErrorResponse(error);
     }
   }
@@ -336,25 +482,55 @@ export async function executeMihomoNoAuthRoute({
   if (lastResult) {
     const lastError = lastResult.error || "rate limited";
     const lastUpstreamStatus = lastResult.status || "unknown";
-    return mihomoUnavailableResponse(
+    const response = mihomoUnavailableResponse(
       HTTP_STATUS.RATE_LIMITED,
       `All eligible Mihomo routes are temporarily rate-limited. Last upstream status: ${lastUpstreamStatus}. Last error: ${lastError}`,
       lastPrepared?.earliestCooldown || lastRateLimitUntil,
     );
+    mihomoDebug("complete", mihomoRouteDebugContext(routeContext, lastRoute), {
+      result: "failed",
+      attempts: routeContext.attempts,
+      finalStatus: HTTP_STATUS.RATE_LIMITED,
+      finalNode: lastRoute?.nodeName || null,
+      finalEgress: lastRoute ? mihomoRouteEgress(lastRoute) : null,
+      elapsed: Date.now() - requestStartedAt,
+    });
+    return response;
   }
 
   if (lastPrepared?.earliestCooldown) {
-    return mihomoUnavailableResponse(
+    const response = mihomoUnavailableResponse(
       HTTP_STATUS.RATE_LIMITED,
       "All eligible Mihomo routes are temporarily rate-limited",
       lastPrepared.earliestCooldown,
     );
+    mihomoDebug("complete", mihomoRouteDebugContext(routeContext, lastRoute), {
+      result: "failed",
+      attempts: routeContext.attempts,
+      finalStatus: HTTP_STATUS.RATE_LIMITED,
+      elapsed: Date.now() - requestStartedAt,
+    });
+    return response;
   }
 
   if (lastPrepared?.directory?.nodes?.length === 0) {
-    return errorResponse(HTTP_STATUS.SERVICE_UNAVAILABLE, "No eligible Mihomo leaf proxy nodes are available");
+    const response = errorResponse(HTTP_STATUS.SERVICE_UNAVAILABLE, "No eligible Mihomo leaf proxy nodes are available");
+    mihomoDebug("complete", mihomoRouteDebugContext(routeContext, lastRoute), {
+      result: "failed",
+      attempts: routeContext.attempts,
+      finalStatus: HTTP_STATUS.SERVICE_UNAVAILABLE,
+      elapsed: Date.now() - requestStartedAt,
+    });
+    return response;
   }
-  return errorResponse(HTTP_STATUS.SERVICE_UNAVAILABLE, "All eligible Mihomo routes are temporarily unavailable");
+  const response = errorResponse(HTTP_STATUS.SERVICE_UNAVAILABLE, "All eligible Mihomo routes are temporarily unavailable");
+  mihomoDebug("complete", mihomoRouteDebugContext(routeContext, lastRoute), {
+    result: "failed",
+    attempts: routeContext.attempts,
+    finalStatus: HTTP_STATUS.SERVICE_UNAVAILABLE,
+    elapsed: Date.now() - requestStartedAt,
+  });
+  return response;
 }
 
 /**

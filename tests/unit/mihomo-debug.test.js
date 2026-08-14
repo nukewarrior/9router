@@ -1,11 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  isMihomoDebugEnabled,
   mihomoErrorFields,
+  mihomoDebug,
   resolveMihomoRequestId,
   sanitizeProxyUrl,
   sanitizeTarget,
   serializeMihomoError,
 } from "../../open-sse/utils/mihomoDebug.js";
+
+afterEach(() => {
+  delete process.env.MIHOMO_DEBUG;
+  vi.restoreAllMocks();
+});
 
 describe("Mihomo debug helpers", () => {
   it("sanitizes proxy credentials while retaining the listener address", () => {
@@ -56,5 +63,19 @@ describe("Mihomo debug helpers", () => {
     fifth.cause = first;
 
     expect(serializeMihomoError(first)).toHaveLength(4);
+  });
+
+  it("is disabled by default and can be enabled in production", () => {
+    const output = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    process.env.MIHOMO_DEBUG = "false";
+    mihomoDebug("selected", { requestId: "req-1" }, { node: "node-a", secret: "do-not-log" });
+    expect(isMihomoDebugEnabled()).toBe(false);
+    expect(output).not.toHaveBeenCalled();
+
+    process.env.MIHOMO_DEBUG = "true";
+    mihomoDebug("selected", { requestId: "req-1", routeId: "route-1", attempt: 1, maxAttempts: 2 }, { node: "node-a" });
+    expect(isMihomoDebugEnabled()).toBe(true);
+    expect(output).toHaveBeenCalledWith(expect.stringContaining("[MIHOMO][req=req-1][route=route-1][attempt=1/2] selected"));
   });
 });

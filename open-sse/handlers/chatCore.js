@@ -29,6 +29,7 @@ import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { stripUnsupportedModalities } from "../translator/concerns/modality.js";
 import { prefetchRemoteImages } from "../translator/concerns/prefetch.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
+import { sanitizeProxyUrl } from "../utils/mihomoDebug.js";
 
 /**
  * Core chat handler - shared between SSE and Worker
@@ -296,6 +297,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     connectionProxyUrl: credentials?.providerSpecificData?.connectionProxyUrl || "",
     connectionNoProxy: credentials?.providerSpecificData?.connectionNoProxy || "",
     strictProxy: credentials?.providerSpecificData?.strictProxy === true,
+    streaming: stream,
     vercelRelayUrl: credentials?.providerSpecificData?.vercelRelayUrl || "",
     ...(proxyOptionsOverride || {}),
   };
@@ -313,16 +315,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     const poolId = credentials?.providerSpecificData?.connectionProxyPoolId || "none";
     log?.info?.("PROXY", `${provider.toUpperCase()} | ${model} | conn=${connectionName} | pool=${poolId} | vercel-relay=${proxyOptions.vercelRelayUrl}`);
   } else if (proxyOptions.connectionProxyEnabled && proxyOptions.connectionProxyUrl) {
-    let maskedProxyUrl = proxyOptions.connectionProxyUrl;
-    try {
-      const parsed = new URL(proxyOptions.connectionProxyUrl);
-      const host = parsed.hostname || "";
-      const port = parsed.port ? `:${parsed.port}` : "";
-      const protocol = parsed.protocol || "http:";
-      maskedProxyUrl = `${protocol}//${host}${port}`;
-    } catch {
-      // Keep raw if URL parsing fails
-    }
+    const maskedProxyUrl = sanitizeProxyUrl(proxyOptions.connectionProxyUrl);
 
     const poolId = credentials?.providerSpecificData?.connectionProxyPoolId || "none";
     const connectionName = credentials?.connectionName || credentials?.connectionId || "unknown";

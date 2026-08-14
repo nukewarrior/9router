@@ -70,6 +70,7 @@ describe("Mihomo no-auth route fallback", () => {
       provider: "opencode",
       model: "deepseek-v4-flash-free",
       credentials: credentials(),
+      clientRawRequest: { headers: { "x-request-id": "client-req-1" } },
       deps: { prepareRoute, executeAttempt, leaseRoute, recordFailure, recordSuccess },
     });
 
@@ -89,6 +90,9 @@ describe("Mihomo no-auth route fallback", () => {
       ephemeralProxyDispatcher: true,
       mihomoManaged: true,
     });
+    expect(prepareRoute.mock.calls[0][0].routeContext.requestId).toBe("client-req-1");
+    expect(prepareRoute.mock.calls[1][0].routeContext.requestId).toBe("client-req-1");
+    expect(prepareRoute.mock.calls[1][0].routeContext.routeId).toBe(prepareRoute.mock.calls[0][0].routeContext.routeId);
   });
 
   it("returns Retry-After when every remaining candidate is cooling down", async () => {
