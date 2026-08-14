@@ -80,6 +80,29 @@ Mihomo 路由将插入以下位置：
 - `tests/unit/proxy-*.test.js`
 - `tests/unit/chat-mihomo-fallback.test.js`
 
+## Troubleshooting / Debug Logging
+
+Mihomo 专用详细日志默认关闭；不需要把整个 9Router 切换到 development：
+
+```env
+MIHOMO_DEBUG=true
+```
+
+在生产容器重启后，日志会以单行形式记录同一请求的 `req`、同一轮路由的
+`route` 和每次 `attempt`，覆盖候选统计、节点与出口身份、Selector 切换/verify
+耗时、Listener 请求耗时、底层 transport cause、cooldown 和实际 retry decision。
+
+```bash
+docker logs 9router 2>&1 | grep '\[MIHOMO\]'
+docker logs 9router 2>&1 | grep '\[PROXY\]'
+docker logs 9router 2>&1 | grep 'req=91bc23'
+```
+
+请求会优先复用入站的 `x-request-id` / correlation ID；没有时生成短 ID，内部
+retry 不会改变它。日志只输出代理地址的协议、主机和端口，以及节点/出口身份；
+Controller secret、Listener 凭证、Authorization、Cookie、API key、token、请求
+body 和用户消息不会输出。排障完成后应关闭该开关并重启容器。
+
 ## 最高风险
 
 1. Controller Selector 切换后按 proxy URL 复用旧 ProxyAgent/CONNECT，会让日志节点与真实出口不一致；managed attempt 必须使用 ephemeral dispatcher。

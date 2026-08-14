@@ -237,6 +237,15 @@ function mihomoRouteEgress(route) {
   return route?.egressIdentityKey || route?.egressSnapshot?.identityKey || "unknown";
 }
 
+function mihomoLegacyContext(routeContext, route = null) {
+  const attempt = Number(route?.attempt);
+  const maxAttempts = Number(route?.maxAttempts || routeContext.maxAttempts);
+  const attemptText = Number.isFinite(attempt)
+    ? ` attempt=${attempt}/${Number.isFinite(maxAttempts) ? maxAttempts : "?"}`
+    : "";
+  return `req=${routeContext.requestId} route=${routeContext.routeId}${attemptText}`;
+}
+
 function isMihomoTransportFailure(result) {
   if (Number(result?.status) !== HTTP_STATUS.BAD_GATEWAY) return false;
   return /(fetch failed|proxy required|und_err_|econn|etimedout|timeout)/i.test(String(result?.error || ""));
@@ -302,9 +311,9 @@ export async function executeMihomoNoAuthRoute({
 
     const route = prepared.route;
     lastRoute = route;
-    log.info("MIHOMO", `pool=${poolId} selector="${route.selectorName}" attempt=${route.attempt}/${prepared.effectiveMaxAttempts} node="${route.nodeName}" region=${route.region}`);
+    log.info("MIHOMO", `${mihomoLegacyContext(routeContext, route)} pool=${poolId} selector="${route.selectorName}" attempt=${route.attempt}/${prepared.effectiveMaxAttempts} node="${route.nodeName}" region=${route.region}`);
     if (prepared.shadowRoute && prepared.shadowRoute.nodeName !== route.nodeName) {
-      log.debug("MIHOMO", `shadow egress candidate node="${prepared.shadowRoute.nodeName}" identity="${prepared.shadowRoute.egressIdentityKey || "unknown"}"`);
+      log.debug("MIHOMO", `${mihomoLegacyContext(routeContext, prepared.shadowRoute)} shadow egress candidate node="${prepared.shadowRoute.nodeName}" identity="${prepared.shadowRoute.egressIdentityKey || "unknown"}"`);
     }
 
     let result;
@@ -360,7 +369,7 @@ export async function executeMihomoNoAuthRoute({
         });
         return mihomoErrorResponse(error);
       }
-      log.info("MIHOMO", `success node="${route.nodeName}" region=${route.region}`);
+      log.info("MIHOMO", `${mihomoLegacyContext(routeContext, route)} success node="${route.nodeName}" region=${route.region}`);
       mihomoDebug("complete", mihomoRouteDebugContext(routeContext, route), {
         result: "success",
         attempts: routeContext.attempts,
@@ -402,7 +411,7 @@ export async function executeMihomoNoAuthRoute({
       return result.response;
     }
 
-    log.warn("MIHOMO", `upstream node="${route.nodeName}" status=${result.status} error=${result.error}`);
+    log.warn("MIHOMO", `${mihomoLegacyContext(routeContext, route)} upstream node="${route.nodeName}" status=${result.status} classification=${classification || "rate_limit"}`);
     try {
       const failure = await recordFailure({
         proxyPoolId: poolId,
@@ -435,9 +444,9 @@ export async function executeMihomoNoAuthRoute({
       }
       routeContext.deprioritizedRegions.add(route.region);
       if (failure.scope === "egress") {
-        log.info("MIHOMO", `egress cooldown=${Math.ceil(failure.cooldownMs / 1000)}s identity="${failure.identityKey}" business=${provider}`);
+        log.info("MIHOMO", `${mihomoLegacyContext(routeContext, route)} egress cooldown=${Math.ceil(failure.cooldownMs / 1000)}s identity="${failure.identityKey}" business=${provider}`);
       } else {
-        log.info("MIHOMO", `node cooldown=${Math.ceil(failure.cooldownMs / 1000)}s node="${route.nodeName}"`);
+        log.info("MIHOMO", `${mihomoLegacyContext(routeContext, route)} node cooldown=${Math.ceil(failure.cooldownMs / 1000)}s node="${route.nodeName}"`);
       }
       mihomoDebug("cooldown", mihomoRouteDebugContext(routeContext, route), {
         scope: failure.scope || "none",
