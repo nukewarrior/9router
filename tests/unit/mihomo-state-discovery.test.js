@@ -42,7 +42,7 @@ describe("Mihomo node discovery", () => {
       providerDataByName: {
         subscription: { proxies: [{ name: "Example Taiwan Node A" }, { name: "Example Japan Node A" }, { name: "auto" }, { name: "not-in-selector" }] },
       },
-      includeRegex: "(?i)TW|JP|auto",
+      includeRegex: "(?i)Taiwan|Japan|auto",
       excludeRegex: "never-match",
     });
 
