@@ -26,6 +26,11 @@ product
 # misc
 .DS_Store
 *.pem
+*.key
+*.sqlite
+*.sqlite3
+*.db
+*.log
 
 # debug
 npm-debug.log*

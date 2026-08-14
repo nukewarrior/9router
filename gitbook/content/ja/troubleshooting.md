@@ -244,7 +244,7 @@
 3. **利用可能なモデルを一覧表示:**
    ```bash
    curl http://localhost:20128/v1/models \
-     -H "Authorization: Bearer your-api-key"
+     -H "Authorization: Bearer ${ROUTER_API_KEY}"
    ```
 
 4. **プロバイダーを再接続:**
@@ -339,7 +339,7 @@
 4. **APIキーをテスト:**
    ```bash
    curl http://localhost:20128/v1/models \
-     -H "Authorization: Bearer 9r_your_key"
+     -H "Authorization: Bearer ${ROUTER_API_KEY}"
    ```
 
 ---

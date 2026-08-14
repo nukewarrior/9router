@@ -13,12 +13,12 @@ describe("Mihomo node discovery", () => {
   beforeEach(() => clearMihomoNodeDirectoryCache());
 
   it("classifies supported regions without broad single-character matches", () => {
-    expect(classifyNodeRegion("🇹🇼 Taiwan TW-A30")).toBe("TW");
-    expect(classifyNodeRegion("日本 JP-A01")).toBe("JP");
-    expect(classifyNodeRegion("United States US-B01")).toBe("US");
-    expect(classifyNodeRegion("Singapore SG-A01")).toBe("SG");
-    expect(classifyNodeRegion("香港 HK-A01")).toBe("HK");
-    expect(classifyNodeRegion("韩国 KR-A01")).toBe("KR");
+    expect(classifyNodeRegion("🇹🇼 Taiwan Example Taiwan Node A")).toBe("TW");
+    expect(classifyNodeRegion("日本 Example Japan Node A")).toBe("JP");
+    expect(classifyNodeRegion("United States Example United States Node A")).toBe("US");
+    expect(classifyNodeRegion("Singapore Example Singapore Node A")).toBe("SG");
+    expect(classifyNodeRegion("香港 Example Hong Kong Node A")).toBe("HK");
+    expect(classifyNodeRegion("韩国 Example Korea Node A")).toBe("KR");
     expect(classifyNodeRegion("台服专线")).toBe("OTHER");
   });
 
@@ -27,38 +27,38 @@ describe("Mihomo node discovery", () => {
       selectorName: "selector",
       selector: {
         type: "Selector",
-        now: "TW-A30",
-        all: ["TW-A30", "JP-A01", "auto", "dead"],
+        now: "Example Taiwan Node A",
+        all: ["Example Taiwan Node A", "Example Japan Node A", "auto", "dead"],
       },
       proxies: {
         proxies: {
-          "TW-A30": { type: "VLESS", alive: true, history: [{ delay: 82 }] },
-          "JP-A01": { type: "Trojan", alive: true, history: [{ delay: 110 }] },
+          "Example Taiwan Node A": { type: "VLESS", alive: true, history: [{ delay: 82 }] },
+          "Example Japan Node A": { type: "Trojan", alive: true, history: [{ delay: 110 }] },
           auto: { type: "URLTest", alive: true },
           dead: { type: "Shadowsocks", alive: false },
         },
       },
       providerNames: ["subscription"],
       providerDataByName: {
-        subscription: { proxies: [{ name: "TW-A30" }, { name: "JP-A01" }, { name: "auto" }, { name: "not-in-selector" }] },
+        subscription: { proxies: [{ name: "Example Taiwan Node A" }, { name: "Example Japan Node A" }, { name: "auto" }, { name: "not-in-selector" }] },
       },
       includeRegex: "(?i)TW|JP|auto",
       excludeRegex: "never-match",
     });
 
     expect(directory.selectorName).toBe("selector");
-    expect(directory.selectorNow).toBe("TW-A30");
+    expect(directory.selectorNow).toBe("Example Taiwan Node A");
     expect(directory.nodes).toHaveLength(2);
     expect(directory.nodes[0]).toMatchObject({
-      key: "subscription\0TW-A30",
-      nodeName: "TW-A30",
+      key: "subscription\0Example Taiwan Node A",
+      nodeName: "Example Taiwan Node A",
       proxyProvider: "subscription",
       region: "TW",
       delayMs: 82,
       alive: true,
     });
     expect(directory.nodes[1]).toMatchObject({
-      nodeName: "JP-A01",
+      nodeName: "Example Japan Node A",
       proxyProvider: "subscription",
       region: "JP",
       delayMs: 110,

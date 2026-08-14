@@ -10,17 +10,17 @@ function makePool() {
   return {
     id: "state-pool",
     type: "mihomo",
-    mihomo: { controllerUrl: "http://10.11.11.1:9090", selectorName: "selector" },
+    mihomo: { controllerUrl: "http://192.0.2.10:9090", selectorName: "selector" },
     mihomoState: { proxyProviders: {}, egressIdentities: {} },
   };
 }
 
 const mapping = {
-  ip: "61.219.114.43",
+  ip: "198.51.100.20",
   family: 4,
-  identityKey: "4:61.219.114.43",
+  identityKey: "4:198.51.100.20",
   confidence: "stable",
-  observedIps: ["61.219.114.43"],
+  observedIps: ["198.51.100.20"],
   sampleCount: 2,
   successfulSamples: 2,
   observedAt: 1000,
@@ -34,12 +34,12 @@ describe("Mihomo egress state", () => {
     const pool = makePool();
     const mutatePool = async (_id, mutator) => mutator(pool);
     await Promise.all([
-      recordMihomoNodeEgress({ proxyPoolId: pool.id, route: { proxyProvider: "sub-a", nodeName: "TW-A10" }, egress: mapping, mutatePool, nowMs: 1000 }),
-      recordMihomoNodeEgress({ proxyPoolId: pool.id, route: { proxyProvider: "sub-b", nodeName: "TW-A11" }, egress: mapping, mutatePool, nowMs: 1000 }),
+      recordMihomoNodeEgress({ proxyPoolId: pool.id, route: { proxyProvider: "sub-a", nodeName: "Example Taiwan Node A" }, egress: mapping, mutatePool, nowMs: 1000 }),
+      recordMihomoNodeEgress({ proxyPoolId: pool.id, route: { proxyProvider: "sub-b", nodeName: "Example Taiwan Node B" }, egress: mapping, mutatePool, nowMs: 1000 }),
     ]);
 
-    expect(getMihomoNodeEgress(pool, { proxyProvider: "sub-a", nodeName: "TW-A10" })).toMatchObject(mapping);
-    expect(getMihomoNodeEgress(pool, { proxyProvider: "sub-b", nodeName: "TW-A11" })).toMatchObject(mapping);
+    expect(getMihomoNodeEgress(pool, { proxyProvider: "sub-a", nodeName: "Example Taiwan Node A" })).toMatchObject(mapping);
+    expect(getMihomoNodeEgress(pool, { proxyProvider: "sub-b", nodeName: "Example Taiwan Node B" })).toMatchObject(mapping);
     expect(pool.mihomoState.egressIdentities).toEqual({});
     expect(isMihomoEgressFresh(mapping, 6000)).toBe(true);
     expect(isMihomoEgressFresh(mapping, 6001)).toBe(false);
@@ -47,7 +47,7 @@ describe("Mihomo egress state", () => {
 
   it("provides provider-isolated identity state defaults", () => {
     const pool = makePool();
-    expect(getMihomoEgressBusinessState(pool, "4:61.219.114.43", "opencode")).toEqual({
+    expect(getMihomoEgressBusinessState(pool, "4:198.51.100.20", "opencode")).toEqual({
       cooldownUntil: null,
       backoffLevel: 0,
       lastStatus: null,

@@ -1024,7 +1024,7 @@ export default function ProxyPoolsPage() {
             <textarea
               value={batchImportText}
               onChange={(e) => setBatchImportText(e.target.value)}
-              placeholder={"http://user:pass@127.0.0.1:7897\n127.0.0.1:7897:user:pass"}
+                placeholder={"http://test-user:test-pass@127.0.0.1:7897\n127.0.0.1:7897:test-user:test-pass"}
               className="w-full min-h-[180px] py-2 px-3 text-sm text-text-main bg-white dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-md focus:ring-1 focus:ring-primary/30 focus:border-primary/50 focus:outline-none transition-all"
             />
             <p className="text-xs text-text-muted mt-1">
@@ -1278,7 +1278,7 @@ export default function ProxyPoolsPage() {
                 label="Controller URL"
                 value={formData.mihomo.controllerUrl}
                 onChange={(e) => setFormData((prev) => ({ ...prev, mihomo: { ...prev.mihomo, controllerUrl: e.target.value } }))}
-                placeholder="http://10.11.11.1:9090"
+                placeholder="http://<mihomo-controller>:9090"
               />
               <Input
                 label="Controller Secret"
@@ -1292,13 +1292,13 @@ export default function ProxyPoolsPage() {
                 label="Selector"
                 value={formData.mihomo.selectorName}
                 onChange={(e) => setFormData((prev) => ({ ...prev, mihomo: { ...prev.mihomo, selectorName: e.target.value } }))}
-                placeholder="🤖 OpenCode调度"
+                placeholder="Test Selector"
               />
               <Input
                 label="Proxy Provider(s)"
                 value={formData.mihomo.providerNamesText}
                 onChange={(e) => setFormData((prev) => ({ ...prev, mihomo: { ...prev.mihomo, providerNamesText: e.target.value } }))}
-                placeholder="订阅一, 订阅二"
+                placeholder="Test Provider A, Test Provider B"
                 hint="Comma-separated. Leave empty to use the Selector's members without provider intersection."
               />
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -1306,7 +1306,7 @@ export default function ProxyPoolsPage() {
                   label="Include Regex"
                   value={formData.mihomo.includeRegex}
                   onChange={(e) => setFormData((prev) => ({ ...prev, mihomo: { ...prev.mihomo, includeRegex: e.target.value } }))}
-                  placeholder="(?i)台湾|日本|美国"
+                  placeholder="(?i)Taiwan|Japan|United States"
                 />
                 <Input
                   label="Exclude Regex"

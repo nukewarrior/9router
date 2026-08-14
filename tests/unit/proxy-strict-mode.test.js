@@ -13,7 +13,7 @@ describe("resolveConnectionProxyConfig strict semantics", () => {
     getProxyPoolById.mockResolvedValue({
       id: "mihomo-pool",
       type: "mihomo",
-      proxyUrl: "http://router:17891",
+      proxyUrl: "http://router:18080",
       isActive: true,
       strictProxy: false,
     });

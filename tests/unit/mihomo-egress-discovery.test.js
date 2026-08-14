@@ -10,9 +10,9 @@ function makePool(overrides = {}) {
     id: "egress-pool",
     type: "mihomo",
     isActive: true,
-    proxyUrl: "http://router:17892",
+    proxyUrl: "http://router:18081",
     mihomo: {
-      controllerUrl: "http://10.11.11.1:9090",
+      controllerUrl: "http://192.0.2.10:9090",
       selectorName: "selector",
       samplesPerNode: 2,
       egressProbeTtlMs: 60000,
@@ -29,10 +29,10 @@ function response(body, status = 200) {
 
 describe("Mihomo egress identity normalization", () => {
   it("canonicalizes IPv4 and IPv6 into family-qualified keys", () => {
-    expect(normalizeEgressIdentity(" 61.219.114.43\n")).toEqual({
-      ip: "61.219.114.43",
+    expect(normalizeEgressIdentity(" 198.51.100.20\n")).toEqual({
+      ip: "198.51.100.20",
       family: 4,
-      identityKey: "4:61.219.114.43",
+      identityKey: "4:198.51.100.20",
     });
     expect(normalizeEgressIdentity("2001:0db8:0:0:0:0:2:1")).toEqual({
       ip: "2001:db8::2:1",
@@ -49,26 +49,26 @@ describe("Mihomo egress identity normalization", () => {
   it("rejects HTML, malformed and whitespace-containing probe bodies", () => {
     expect(normalizeEgressIdentity("<html>429 Too Many Requests</html>")).toBeNull();
     expect(normalizeEgressIdentity("not-an-ip")).toBeNull();
-    expect(normalizeEgressIdentity("1.2.3.4 extra")).toBeNull();
+    expect(normalizeEgressIdentity("192.0.2.20 extra")).toBeNull();
   });
 });
 
 describe("Mihomo egress probe sample evaluation", () => {
   it("distinguishes stable, dynamic, tentative and unknown mappings", () => {
-    expect(evaluateEgressProbeSamples(["1.2.3.4", "1.2.3.4"], { nowMs: 1000, ttlMs: 5000 })).toMatchObject({
+    expect(evaluateEgressProbeSamples(["192.0.2.20", "192.0.2.20"], { nowMs: 1000, ttlMs: 5000 })).toMatchObject({
       confidence: "stable",
-      identityKey: "4:1.2.3.4",
+      identityKey: "4:192.0.2.20",
       sampleCount: 2,
       successfulSamples: 2,
       observedAt: 1000,
       expiresAt: 6000,
     });
-    expect(evaluateEgressProbeSamples(["1.2.3.4", "1.2.3.5"], { nowMs: 1000 })).toMatchObject({
+    expect(evaluateEgressProbeSamples(["192.0.2.20", "192.0.2.21"], { nowMs: 1000 })).toMatchObject({
       confidence: "dynamic",
       identityKey: null,
-      observedIps: ["1.2.3.4", "1.2.3.5"],
+      observedIps: ["192.0.2.20", "192.0.2.21"],
     });
-    expect(evaluateEgressProbeSamples(["1.2.3.4"], { nowMs: 1000 })).toMatchObject({ confidence: "tentative", successfulSamples: 1 });
+    expect(evaluateEgressProbeSamples(["192.0.2.20"], { nowMs: 1000 })).toMatchObject({ confidence: "tentative", successfulSamples: 1 });
     expect(evaluateEgressProbeSamples([null, null], { errors: [new Error("timeout"), "proxy failed"], nowMs: 1000 })).toMatchObject({
       confidence: "unknown",
       successfulSamples: 0,
@@ -99,15 +99,15 @@ describe("Mihomo egress node discovery", () => {
       expect(proxyOptions).toMatchObject({
         strictProxy: true,
         ephemeralProxyDispatcher: true,
-        connectionProxyUrl: "http://router:17892",
+        connectionProxyUrl: "http://router:18081",
       });
-      return response("61.219.114.43\n");
+      return response("198.51.100.20\n");
     });
 
     const result = await probeMihomoNodeEgress({
       poolId: pool.id,
       proxyProvider: "subscription",
-      nodeName: "TW-A10",
+      nodeName: "Example Taiwan Node A",
       getPool: async () => pool,
       makeClient: () => client,
       fetchProbe,
@@ -115,12 +115,12 @@ describe("Mihomo egress node discovery", () => {
       nowMs: 1000,
     });
 
-    expect(result).toMatchObject({ ok: true, egress: { confidence: "stable", identityKey: "4:61.219.114.43" } });
+    expect(result).toMatchObject({ ok: true, egress: { confidence: "stable", identityKey: "4:198.51.100.20" } });
     expect(fetchProbe).toHaveBeenCalledTimes(2);
-    expect(events).toEqual(["PUT:TW-A10", "GET", "PROBE:TW-A10", "PROBE:TW-A10"]);
-    expect(pool.mihomoState.proxyProviders.subscription.nodes["TW-A10"].egress).toMatchObject({
+    expect(events).toEqual(["PUT:Example Taiwan Node A", "GET", "PROBE:Example Taiwan Node A", "PROBE:Example Taiwan Node A"]);
+    expect(pool.mihomoState.proxyProviders.subscription.nodes["Example Taiwan Node A"].egress).toMatchObject({
       confidence: "stable",
-      identityKey: "4:61.219.114.43",
+      identityKey: "4:198.51.100.20",
       expiresAt: 61000,
     });
   });
@@ -129,12 +129,12 @@ describe("Mihomo egress node discovery", () => {
     const pool = makePool({ samplesPerNode: 1 });
     const client = {
       selectProxy: vi.fn(),
-      getProxy: vi.fn().mockResolvedValue({ type: "Selector", now: "TW-A10" }),
+      getProxy: vi.fn().mockResolvedValue({ type: "Selector", now: "Example Taiwan Node A" }),
     };
     const result = await probeMihomoNodeEgress({
       poolId: pool.id,
       proxyProvider: "subscription",
-      nodeName: "TW-A10",
+      nodeName: "Example Taiwan Node A",
       getPool: async () => pool,
       makeClient: () => client,
       fetchProbe: vi.fn(async () => { throw new Error("connect refused"); }),
@@ -144,6 +144,6 @@ describe("Mihomo egress node discovery", () => {
 
     expect(result.ok).toBe(false);
     expect(result.egress).toMatchObject({ confidence: "unknown", lastProbeError: "connect refused" });
-    expect(pool.mihomoState.proxyProviders.subscription.nodes["TW-A10"].egress.confidence).toBe("unknown");
+    expect(pool.mihomoState.proxyProviders.subscription.nodes["Example Taiwan Node A"].egress.confidence).toBe("unknown");
   });
 });

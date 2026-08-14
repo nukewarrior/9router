@@ -381,7 +381,7 @@ Model: free-combo
 
 ```bash
 curl http://localhost:20128/v1/chat/completions \
-  -H "Authorization: Bearer your-api-key" \
+  -H "Authorization: Bearer ${ROUTER_API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "premium-coding",

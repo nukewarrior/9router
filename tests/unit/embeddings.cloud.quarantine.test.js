@@ -68,7 +68,7 @@ import { getMachineData, saveMachineData } from "../../cloud/src/services/storag
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
 const MACHINE_ID = "mach01";
-const VALID_API_KEY = "sk-mach01-key01-ab12cd34"; // new format shape
+const VALID_API_KEY = "sk-test-key"; // clearly dummy fixture
 const VALID_EMBEDDING_RESPONSE_BODY = {
   object: "list",
   data: [{ object: "embedding", index: 0, embedding: [0.1, 0.2, 0.3] }],

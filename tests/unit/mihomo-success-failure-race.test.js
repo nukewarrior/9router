@@ -11,9 +11,9 @@ function makePool(egressScopedCooldown = false) {
     id: egressScopedCooldown ? "race-egress" : "race-node",
     type: "mihomo",
     isActive: true,
-    proxyUrl: "http://router:17892",
+    proxyUrl: "http://router:18081",
     mihomo: {
-      controllerUrl: "http://10.11.11.1:9090",
+      controllerUrl: "http://192.0.2.10:9090",
       selectorName: "selector",
       egressScopedCooldown,
       cooldown: { baseMs: 300000, multiplier: 3, maxMs: 1800000 },
@@ -29,11 +29,11 @@ function mutatorFor(pool) {
   return async (_id, mutator) => mutator(pool);
 }
 
-function setStableEgress(pool, identityKey = "4:61.219.114.43", confidence = "stable") {
+function setStableEgress(pool, identityKey = "4:198.51.100.20", confidence = "stable") {
   const [, ip] = identityKey.split(":");
   pool.mihomoState.proxyProviders.subscription = {
     nodes: {
-      "TW-A10": {
+      "Example Taiwan Node A": {
         egress: {
           ip,
           family: 4,
@@ -80,9 +80,9 @@ describe("Mihomo success/failure temporal ordering", () => {
     if (egressScopedCooldown) setStableEgress(pool);
     const route = {
       proxyProvider: "subscription",
-      nodeName: "TW-A10",
+      nodeName: "Example Taiwan Node A",
       attemptStartedAtMs: 1000,
-      egressSnapshot: attemptSnapshot("4:61.219.114.43", 1000),
+      egressSnapshot: attemptSnapshot("4:198.51.100.20", 1000),
     };
 
     await recordFailure(pool, route, 3000);
@@ -95,7 +95,7 @@ describe("Mihomo success/failure temporal ordering", () => {
     });
 
     const state = egressScopedCooldown
-      ? getMihomoEgressBusinessState(pool, "4:61.219.114.43", "opencode")
+      ? getMihomoEgressBusinessState(pool, "4:198.51.100.20", "opencode")
       : getMihomoNodeBusinessState(pool, route, "opencode");
     expect(state).toMatchObject({ backoffLevel: 1, lastStatus: 429 });
     expect(state.cooldownUntil).toBe("1970-01-01T00:05:03.000Z");
@@ -111,9 +111,9 @@ describe("Mihomo success/failure temporal ordering", () => {
     if (egressScopedCooldown) setStableEgress(pool);
     const failureRoute = {
       proxyProvider: "subscription",
-      nodeName: "TW-A10",
+      nodeName: "Example Taiwan Node A",
       attemptStartedAtMs: 500,
-      egressSnapshot: attemptSnapshot("4:61.219.114.43", 500),
+      egressSnapshot: attemptSnapshot("4:198.51.100.20", 500),
     };
     await recordFailure(pool, failureRoute, 1000);
 
@@ -130,7 +130,7 @@ describe("Mihomo success/failure temporal ordering", () => {
     });
 
     const state = egressScopedCooldown
-      ? getMihomoEgressBusinessState(pool, "4:61.219.114.43", "opencode")
+      ? getMihomoEgressBusinessState(pool, "4:198.51.100.20", "opencode")
       : getMihomoNodeBusinessState(pool, failureRoute, "opencode");
     expect(state).toMatchObject({ cooldownUntil: null, backoffLevel: 0, lastStatus: 200 });
     expect(state.lastErrorAt).toBeNull();
@@ -141,21 +141,21 @@ describe("Mihomo success/failure temporal ordering", () => {
     setStableEgress(pool);
     const route = {
       proxyProvider: "subscription",
-      nodeName: "TW-A10",
+      nodeName: "Example Taiwan Node A",
       attemptStartedAtMs: 1000,
-      egressSnapshot: attemptSnapshot("4:61.219.114.43", 1000),
+      egressSnapshot: attemptSnapshot("4:198.51.100.20", 1000),
     };
 
-    setStableEgress(pool, "4:9.9.9.9");
+    setStableEgress(pool, "4:203.0.113.31");
     const result = await recordFailure(pool, route, 2000);
 
-    expect(result).toMatchObject({ scope: "egress", identityKey: "4:61.219.114.43" });
-    expect(getMihomoEgressBusinessState(pool, "4:61.219.114.43", "opencode")).toMatchObject({
+    expect(result).toMatchObject({ scope: "egress", identityKey: "4:198.51.100.20" });
+    expect(getMihomoEgressBusinessState(pool, "4:198.51.100.20", "opencode")).toMatchObject({
       backoffLevel: 1,
       lastStatus: 429,
     });
-    expect(getMihomoEgressBusinessState(pool, "4:9.9.9.9", "opencode").cooldownUntil).toBeNull();
-    expect(pool.mihomoState.proxyProviders.subscription.nodes["TW-A10"].egress.needsProbe).toBe(false);
+    expect(getMihomoEgressBusinessState(pool, "4:203.0.113.31", "opencode").cooldownUntil).toBeNull();
+    expect(pool.mihomoState.proxyProviders.subscription.nodes["Example Taiwan Node A"].egress.needsProbe).toBe(false);
     expect(getMihomoNodeBusinessState(pool, route, "opencode").cooldownUntil).toBeNull();
   });
 
@@ -164,16 +164,16 @@ describe("Mihomo success/failure temporal ordering", () => {
     setStableEgress(pool);
     const oldRoute = {
       proxyProvider: "subscription",
-      nodeName: "TW-A10",
+      nodeName: "Example Taiwan Node A",
       attemptStartedAtMs: 1000,
-      egressSnapshot: attemptSnapshot("4:61.219.114.43", 1000),
+      egressSnapshot: attemptSnapshot("4:198.51.100.20", 1000),
     };
 
-    setStableEgress(pool, "4:9.9.9.9");
+    setStableEgress(pool, "4:203.0.113.31");
     const newRoute = {
       ...oldRoute,
       attemptStartedAtMs: 2000,
-      egressSnapshot: attemptSnapshot("4:9.9.9.9", 2000),
+      egressSnapshot: attemptSnapshot("4:203.0.113.31", 2000),
     };
     await recordFailure(pool, newRoute, 3000);
 
@@ -185,11 +185,11 @@ describe("Mihomo success/failure temporal ordering", () => {
       nowMs: 4000,
     });
 
-    expect(getMihomoEgressBusinessState(pool, "4:9.9.9.9", "opencode")).toMatchObject({
+    expect(getMihomoEgressBusinessState(pool, "4:203.0.113.31", "opencode")).toMatchObject({
       backoffLevel: 1,
       lastStatus: 429,
     });
-    expect(getMihomoEgressBusinessState(pool, "4:61.219.114.43", "opencode")).toMatchObject({
+    expect(getMihomoEgressBusinessState(pool, "4:198.51.100.20", "opencode")).toMatchObject({
       cooldownUntil: null,
       lastStatus: 200,
     });
@@ -197,12 +197,12 @@ describe("Mihomo success/failure temporal ordering", () => {
 
   it("keeps a tentative attempt node-scoped after its mapping becomes stable", async () => {
     const pool = makePool(true);
-    setStableEgress(pool, "4:61.219.114.43", "tentative");
+    setStableEgress(pool, "4:198.51.100.20", "tentative");
     const route = {
       proxyProvider: "subscription",
-      nodeName: "TW-A10",
+      nodeName: "Example Taiwan Node A",
       attemptStartedAtMs: 1000,
-      egressSnapshot: attemptSnapshot("4:61.219.114.43", 1000, false),
+      egressSnapshot: attemptSnapshot("4:198.51.100.20", 1000, false),
     };
 
     setStableEgress(pool);
@@ -218,7 +218,7 @@ describe("Mihomo success/failure temporal ordering", () => {
 
     expect(result).toMatchObject({ scope: "node", identityKey: null });
     expect(getMihomoNodeBusinessState(pool, route, "opencode")).toMatchObject({ backoffLevel: 1, lastStatus: 429 });
-    expect(getMihomoEgressBusinessState(pool, "4:61.219.114.43", "opencode").cooldownUntil).toBeNull();
-    expect(pool.mihomoState.proxyProviders.subscription.nodes["TW-A10"].egress.needsProbe).toBe(true);
+    expect(getMihomoEgressBusinessState(pool, "4:198.51.100.20", "opencode").cooldownUntil).toBeNull();
+    expect(pool.mihomoState.proxyProviders.subscription.nodes["Example Taiwan Node A"].egress.needsProbe).toBe(true);
   });
 });

@@ -57,7 +57,7 @@ describe("Mihomo no-auth route fallback", () => {
       .mockResolvedValueOnce({ success: true, response: response(200, { ok: true }) });
     const leaseRoute = vi.fn(async ({ nodeName }, callback) => callback({
       connectionProxyEnabled: true,
-      connectionProxyUrl: "http://router:17891",
+      connectionProxyUrl: "http://router:18080",
       strictProxy: true,
       ephemeralProxyDispatcher: true,
       mihomoManaged: true,

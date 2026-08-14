@@ -8,11 +8,11 @@ function pool() {
     id: "pool-1",
     type: "mihomo",
     isActive: true,
-    proxyUrl: "http://router:17891",
+    proxyUrl: "http://router:18080",
     mihomo: {
-      controllerUrl: "http://10.11.11.1:9090",
+      controllerUrl: "http://192.0.2.10:9090",
       controllerSecret: "secret",
-      selectorName: "🤖 OpenCode调度",
+      selectorName: "Test Selector",
     },
   };
 }
@@ -36,7 +36,7 @@ describe("Mihomo Selector lease", () => {
       events.push("CALLBACK:A");
       expect(proxyOptions).toMatchObject({
         connectionProxyEnabled: true,
-        connectionProxyUrl: "http://router:17891",
+        connectionProxyUrl: "http://router:18080",
         connectionNoProxy: "",
         strictProxy: true,
         ephemeralProxyDispatcher: true,
@@ -54,12 +54,12 @@ describe("Mihomo Selector lease", () => {
     });
     await tick();
 
-    expect(events).toEqual(["PUT:A", "GET:🤖 OpenCode调度", "CALLBACK:A"]);
+    expect(events).toEqual(["PUT:A", "GET:Test Selector", "CALLBACK:A"]);
     releaseA();
     await expect(Promise.all([first, second])).resolves.toEqual(["A", "B"]);
     expect(events).toEqual([
-      "PUT:A", "GET:🤖 OpenCode调度", "CALLBACK:A", "RETURN:A",
-      "PUT:B", "GET:🤖 OpenCode调度", "CALLBACK:B",
+      "PUT:A", "GET:Test Selector", "CALLBACK:A", "RETURN:A",
+      "PUT:B", "GET:Test Selector", "CALLBACK:B",
     ]);
     expect(makeClient).toHaveBeenCalledTimes(2);
   });

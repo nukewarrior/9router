@@ -24,7 +24,7 @@ function mockFetchOnce(bytes, ok = true) {
 
 beforeEach(() => {
   lookupMock.mockReset();
-  lookupMock.mockResolvedValue({ address: "93.184.216.34" }); // public by default
+  lookupMock.mockResolvedValue({ address: "192.0.2.30" }); // public by default
 });
 afterEach(() => { vi.restoreAllMocks(); });
 

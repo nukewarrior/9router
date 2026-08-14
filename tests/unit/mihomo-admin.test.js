@@ -11,11 +11,11 @@ function makePool() {
   return {
     id: "pool-admin",
     type: "mihomo",
-    proxyUrl: "http://10.11.11.1:17891",
+    proxyUrl: "http://198.51.100.10:18080",
     isActive: true,
     mihomo: {
-      controllerUrl: "http://10.11.11.1:9090",
-      controllerSecret: "top-secret",
+      controllerUrl: "http://192.0.2.10:9090",
+      controllerSecret: "test-controller-secret",
       selectorName: "selector",
       providerNames: ["subscription"],
       syncTtlMs: 30000,
@@ -25,7 +25,7 @@ function makePool() {
 }
 
 function fakeClient() {
-  const nodes = ["🇹🇼 TW-A30", "🇯🇵 JP-A01"];
+  const nodes = ["🇹🇼 Example Taiwan Node A", "🇯🇵 Example Japan Node A"];
   return {
     getVersion: async () => ({ version: "1.0.0" }),
     getProxy: async () => ({ type: "Selector", now: nodes[0], all: nodes }),
@@ -52,18 +52,18 @@ describe("Mihomo admin operations", () => {
       listener: { ok: true, status: 204 },
     });
     expect(result.nodes).toHaveLength(2);
-    expect(JSON.stringify(result)).not.toContain("top-secret");
+    expect(JSON.stringify(result)).not.toContain("test-controller-secret");
   });
 
   it("returns provider-scoped node state for the status table", async () => {
     const pool = makePool();
     pool.mihomoState.proxyProviders.subscription = {
       nodes: {
-        "🇹🇼 TW-A30": {
+        "🇹🇼 Example Taiwan Node A": {
           egress: {
-            ip: "61.219.114.43",
+            ip: "198.51.100.20",
             family: 4,
-            identityKey: "4:61.219.114.43",
+            identityKey: "4:198.51.100.20",
             confidence: "stable",
             sampleCount: 2,
             successfulSamples: 2,
@@ -80,16 +80,16 @@ describe("Mihomo admin operations", () => {
         },
       },
     };
-    pool.mihomoState.egressIdentities["4:61.219.114.43"] = {
+    pool.mihomoState.egressIdentities["4:198.51.100.20"] = {
       business: { opencode: { cooldownUntil: new Date(Date.now() + 60000).toISOString(), backoffLevel: 1 } },
     };
     const result = await getMihomoNodeStatus({ pool, makeClient: () => fakeClient() });
-    expect(result.selector).toMatchObject({ name: "selector", now: "🇹🇼 TW-A30" });
+    expect(result.selector).toMatchObject({ name: "selector", now: "🇹🇼 Example Taiwan Node A" });
     expect(result.nodes[0].providerState.opencode).toMatchObject({ status: "cooldown", lastStatus: 429 });
     expect(result.nodes[0]).toMatchObject({
-      exitIp: "61.219.114.43",
+      exitIp: "198.51.100.20",
       exitIpFamily: 4,
-      exitIdentityKey: "4:61.219.114.43",
+      exitIdentityKey: "4:198.51.100.20",
       exitConfidence: "stable",
       exitFresh: true,
       exitGroupSize: 1,
@@ -104,11 +104,11 @@ describe("Mihomo admin operations", () => {
     pool.mihomo.egressScopedCooldown = true;
     pool.mihomoState.proxyProviders.subscription = {
       nodes: {
-        "🇹🇼 TW-A30": {
+        "🇹🇼 Example Taiwan Node A": {
           egress: {
-            ip: "61.219.114.43",
+            ip: "198.51.100.20",
             family: 4,
-            identityKey: "4:61.219.114.43",
+            identityKey: "4:198.51.100.20",
             confidence: "stable",
             observedAt: 100,
             expiresAt: 1000000,
@@ -117,7 +117,7 @@ describe("Mihomo admin operations", () => {
         },
       },
     };
-    pool.mihomoState.egressIdentities["4:61.219.114.43"] = {
+    pool.mihomoState.egressIdentities["4:198.51.100.20"] = {
       business: { opencode: { cooldownUntil: new Date(500000).toISOString() } },
     };
 

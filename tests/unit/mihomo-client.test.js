@@ -24,7 +24,7 @@ function jsonResponse(value, status = 200) {
 
 describe("Mihomo Controller URL validation", () => {
   it("allows router private and loopback addresses", () => {
-    expect(validateMihomoControllerUrl("http://10.11.11.1:9090")).toBe("http://10.11.11.1:9090");
+    expect(validateMihomoControllerUrl("http://192.0.2.10:9090")).toBe("http://192.0.2.10:9090");
     expect(validateMihomoControllerUrl("http://127.0.0.1:9090")).toBe("http://127.0.0.1:9090");
     expect(validateMihomoControllerUrl("https://router.example.test/api/")).toBe("https://router.example.test/api");
   });
@@ -61,17 +61,17 @@ describe("Mihomo Controller client", () => {
   });
 
   it("uses Bearer auth, redirect error, timeout signal and encoded path segments", async () => {
-    mocks.undiciFetch.mockResolvedValueOnce(jsonResponse({ now: "JP-A01", type: "Selector" }));
+    mocks.undiciFetch.mockResolvedValueOnce(jsonResponse({ now: "Example Japan Node A", type: "Selector" }));
     const client = createMihomoClient({
-      controllerUrl: "http://10.11.11.1:9090",
+      controllerUrl: "http://192.0.2.10:9090",
       secret: "controller-secret",
       timeoutMs: 1200,
     });
 
-    await client.getProxy("🤖 OpenCode调度/primary");
+    await client.getProxy("Test Selector/primary");
 
     const [url, options] = mocks.undiciFetch.mock.calls[0];
-    expect(url).toBe("http://10.11.11.1:9090/proxies/%F0%9F%A4%96%20OpenCode%E8%B0%83%E5%BA%A6%2Fprimary");
+    expect(url).toBe("http://192.0.2.10:9090/proxies/Test%20Selector%2Fprimary");
     expect(options).toMatchObject({
       method: "GET",
       redirect: "error",
@@ -87,10 +87,10 @@ describe("Mihomo Controller client", () => {
     mocks.undiciFetch.mockResolvedValueOnce(new Response(null, { status: 204 }));
     const client = createMihomoClient({ controllerUrl: "http://127.0.0.1:9090" });
 
-    await expect(client.selectProxy("selector", "JP-A01")).resolves.toBeNull();
+    await expect(client.selectProxy("selector", "Example Japan Node A")).resolves.toBeNull();
     expect(mocks.undiciFetch.mock.calls[0][1]).toMatchObject({
       method: "PUT",
-      body: JSON.stringify({ name: "JP-A01" }),
+      body: JSON.stringify({ name: "Example Japan Node A" }),
       redirect: "error",
       headers: { Accept: "application/json", "Content-Type": "application/json" },
     });

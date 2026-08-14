@@ -244,7 +244,7 @@ Các vấn đề và giải pháp phổ biến khi dùng 9Router.
 3. **Liệt kê model khả dụng:**
    ```bash
    curl http://localhost:20128/v1/models \
-     -H "Authorization: Bearer your-api-key"
+     -H "Authorization: Bearer ${ROUTER_API_KEY}"
    ```
 
 4. **Kết nối lại provider:**
@@ -339,7 +339,7 @@ Các vấn đề và giải pháp phổ biến khi dùng 9Router.
 4. **Test API key:**
    ```bash
    curl http://localhost:20128/v1/models \
-     -H "Authorization: Bearer 9r_your_key"
+     -H "Authorization: Bearer ${ROUTER_API_KEY}"
    ```
 
 ---

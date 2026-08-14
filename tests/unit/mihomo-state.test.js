@@ -26,11 +26,11 @@ describe("Mihomo proxy pool state persistence", () => {
     const pool = await db.createProxyPool({
       name: "OpenCode via Nikki",
       type: "mihomo",
-      proxyUrl: "http://10.11.11.1:17891",
+      proxyUrl: "http://198.51.100.10:18080",
       mihomo: {
-        controllerUrl: "http://10.11.11.1:9090",
+        controllerUrl: "http://192.0.2.10:9090",
         controllerSecret: "secret",
-        selectorName: "🤖 OpenCode调度",
+        selectorName: "Test Selector",
       },
     });
 
@@ -39,18 +39,18 @@ describe("Mihomo proxy pool state persistence", () => {
     expect(pool.mihomoState).toEqual({ proxyProviders: {}, egressIdentities: {} });
 
     await db.mutateProxyPool(pool.id, (current) => {
-      current.mihomoState.proxyProviders.subA = { nodes: { "TW-A30": { business: {} } } };
+      current.mihomoState.proxyProviders.subA = { nodes: { "Example Taiwan Node A": { business: {} } } };
       return current;
     });
     await db.mutateProxyPool(pool.id, (current) => {
-      current.mihomoState.proxyProviders.subB = { nodes: { "JP-A01": { business: {} } } };
+      current.mihomoState.proxyProviders.subB = { nodes: { "Example Japan Node A": { business: {} } } };
       return current;
     });
 
     const stored = await db.getProxyPoolById(pool.id);
     expect(stored.mihomoState.proxyProviders).toEqual({
-      subA: { nodes: { "TW-A30": { business: {} } } },
-      subB: { nodes: { "JP-A01": { business: {} } } },
+      subA: { nodes: { "Example Taiwan Node A": { business: {} } } },
+      subB: { nodes: { "Example Japan Node A": { business: {} } } },
     });
 
     await db.deleteProxyPool(pool.id);

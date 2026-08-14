@@ -12,9 +12,9 @@ function makePool(id = "egress-route") {
     id,
     type: "mihomo",
     isActive: true,
-    proxyUrl: "http://router:17892",
+    proxyUrl: "http://router:18081",
     mihomo: {
-      controllerUrl: "http://10.11.11.1:9090",
+      controllerUrl: "http://192.0.2.10:9090",
       selectorName: "selector",
       providerNames: ["sub-a", "sub-b"],
       preferDistinctEgress: true,
@@ -87,25 +87,25 @@ beforeEach(() => {
 describe("Mihomo egress-aware scheduling", () => {
   it("groups same-IP nodes, including nodes from different providers", () => {
     const nodes = [
-      { key: "sub-a\0TW-A", nodeName: "TW-A", proxyProvider: "sub-a", region: "TW", egress: { ip: "1.2.3.4", family: 4, confidence: "stable", identityKey: "4:1.2.3.4", expiresAt: 9999 } },
-      { key: "sub-b\0TW-B", nodeName: "TW-B", proxyProvider: "sub-b", region: "TW", egress: { ip: "1.2.3.4", family: 4, confidence: "stable", identityKey: "4:1.2.3.4", expiresAt: 9999 } },
-      { key: "sub-a\0TW-C", nodeName: "TW-C", proxyProvider: "sub-a", region: "TW", egress: { ip: "1.2.3.5", family: 4, confidence: "stable", identityKey: "4:1.2.3.5", expiresAt: 9999 } },
+      { key: "sub-a\0Example Taiwan Node A", nodeName: "Example Taiwan Node A", proxyProvider: "sub-a", region: "TW", egress: { ip: "192.0.2.20", family: 4, confidence: "stable", identityKey: "4:192.0.2.20", expiresAt: 9999 } },
+      { key: "sub-b\0Example Taiwan Node B", nodeName: "Example Taiwan Node B", proxyProvider: "sub-b", region: "TW", egress: { ip: "192.0.2.20", family: 4, confidence: "stable", identityKey: "4:192.0.2.20", expiresAt: 9999 } },
+      { key: "sub-a\0Example Taiwan Node C", nodeName: "Example Taiwan Node C", proxyProvider: "sub-a", region: "TW", egress: { ip: "192.0.2.21", family: 4, confidence: "stable", identityKey: "4:192.0.2.21", expiresAt: 9999 } },
     ];
     const groups = groupMihomoNodesByEgress(nodes, 1000);
-    expect(groups.get("4:1.2.3.4").map((node) => node.nodeName)).toEqual(["TW-A", "TW-B"]);
+    expect(groups.get("4:192.0.2.20").map((node) => node.nodeName)).toEqual(["Example Taiwan Node A", "Example Taiwan Node B"]);
     expect(groups.size).toBe(2);
   });
 
   it("round-robins distinct fresh stable exit identities before sibling nodes", async () => {
     const pool = makePool();
     const nodes = [
-      { name: "TW-A01", provider: "sub-a" },
-      { name: "TW-A02", provider: "sub-a" },
-      { name: "TW-A03", provider: "sub-a" },
+      { name: "Example Taiwan Node A", provider: "sub-a" },
+      { name: "Example Taiwan Node B", provider: "sub-a" },
+      { name: "Example Taiwan Node C", provider: "sub-a" },
     ];
-    setEgress(pool, "sub-a", "TW-A01", "4:1.2.3.4");
-    setEgress(pool, "sub-a", "TW-A02", "4:1.2.3.4");
-    setEgress(pool, "sub-a", "TW-A03", "4:1.2.3.5");
+    setEgress(pool, "sub-a", "Example Taiwan Node A", "4:192.0.2.20");
+    setEgress(pool, "sub-a", "Example Taiwan Node B", "4:192.0.2.20");
+    setEgress(pool, "sub-a", "Example Taiwan Node C", "4:192.0.2.21");
     const context = { attemptedNodeKeys: new Set(), attemptedEgressKeys: new Set(), deprioritizedRegions: new Set(), attempts: 0 };
     const options = {
       poolId: pool.id,
@@ -118,22 +118,22 @@ describe("Mihomo egress-aware scheduling", () => {
 
     const first = await prepareMihomoRouteAttempt(options);
     const second = await prepareMihomoRouteAttempt(options);
-    expect(first.route.egressIdentityKey).toBe("4:1.2.3.4");
-    expect(second.route.egressIdentityKey).toBe("4:1.2.3.5");
-    expect(second.route.nodeName).toBe("TW-A03");
-    expect(context.attemptedEgressKeys).toEqual(new Set(["4:1.2.3.4", "4:1.2.3.5"]));
+    expect(first.route.egressIdentityKey).toBe("4:192.0.2.20");
+    expect(second.route.egressIdentityKey).toBe("4:192.0.2.21");
+    expect(second.route.nodeName).toBe("Example Taiwan Node C");
+    expect(context.attemptedEgressKeys).toEqual(new Set(["4:192.0.2.20", "4:192.0.2.21"]));
   });
 
   it("bounds request attempts by distinct egress identities, not sibling node count", async () => {
     const pool = makePool("egress-attempt-limit");
     const nodes = [
-      { name: "TW-A01", provider: "sub-a" },
-      { name: "TW-A02", provider: "sub-a" },
-      { name: "TW-A03", provider: "sub-a" },
+      { name: "Example Taiwan Node A", provider: "sub-a" },
+      { name: "Example Taiwan Node B", provider: "sub-a" },
+      { name: "Example Taiwan Node C", provider: "sub-a" },
     ];
-    setEgress(pool, "sub-a", "TW-A01", "4:1.2.3.4");
-    setEgress(pool, "sub-a", "TW-A02", "4:1.2.3.4");
-    setEgress(pool, "sub-a", "TW-A03", "4:1.2.3.5");
+    setEgress(pool, "sub-a", "Example Taiwan Node A", "4:192.0.2.20");
+    setEgress(pool, "sub-a", "Example Taiwan Node B", "4:192.0.2.20");
+    setEgress(pool, "sub-a", "Example Taiwan Node C", "4:192.0.2.21");
     const context = { attemptedNodeKeys: new Set(), attemptedEgressKeys: new Set(), deprioritizedRegions: new Set(), attempts: 0 };
     const options = {
       poolId: pool.id,
@@ -156,15 +156,15 @@ describe("Mihomo egress-aware scheduling", () => {
   it("preserves region priority and skips an attempted egress key", async () => {
     const pool = makePool();
     const nodes = [
-      { name: "TW-A01", provider: "sub-a" },
-      { name: "TW-A02", provider: "sub-a" },
-      { name: "JP-A01", provider: "sub-a" },
+      { name: "Example Taiwan Node A", provider: "sub-a" },
+      { name: "Example Taiwan Node B", provider: "sub-a" },
+      { name: "Example Japan Node A", provider: "sub-a" },
     ];
-    setEgress(pool, "sub-a", "TW-A01", "4:1.2.3.4");
-    setEgress(pool, "sub-a", "TW-A02", "4:1.2.3.5");
-    setEgress(pool, "sub-a", "JP-A01", "4:9.9.9.9");
-    const result = await prepare(pool, nodes, { attemptedEgressKeys: new Set(["4:1.2.3.4"]) });
-    expect(result.route).toMatchObject({ region: "TW", nodeName: "TW-A02", egressIdentityKey: "4:1.2.3.5" });
+    setEgress(pool, "sub-a", "Example Taiwan Node A", "4:192.0.2.20");
+    setEgress(pool, "sub-a", "Example Taiwan Node B", "4:192.0.2.21");
+    setEgress(pool, "sub-a", "Example Japan Node A", "4:203.0.113.31");
+    const result = await prepare(pool, nodes, { attemptedEgressKeys: new Set(["4:192.0.2.20"]) });
+    expect(result.route).toMatchObject({ region: "TW", nodeName: "Example Taiwan Node B", egressIdentityKey: "4:192.0.2.21" });
   });
 
   it.each([
@@ -182,15 +182,15 @@ describe("Mihomo egress-aware scheduling", () => {
     [
       "dynamic",
       {
-        ip: "1.2.3.4",
+        ip: "192.0.2.20",
         family: 4,
-        identityKey: "4:1.2.3.4",
+        identityKey: "4:192.0.2.20",
         confidence: "dynamic",
         observedAt: 100,
         expiresAt: 9999999999999,
       },
       {
-        identityKey: "4:1.2.3.4",
+        identityKey: "4:192.0.2.20",
         confidence: "dynamic",
         observedAt: 100,
         expiresAt: 9999999999999,
@@ -200,15 +200,15 @@ describe("Mihomo egress-aware scheduling", () => {
     [
       "stale",
       {
-        ip: "1.2.3.5",
+        ip: "192.0.2.21",
         family: 4,
-        identityKey: "4:1.2.3.5",
+        identityKey: "4:192.0.2.21",
         confidence: "stable",
         observedAt: 100,
         expiresAt: 999,
       },
       {
-        identityKey: "4:1.2.3.5",
+        identityKey: "4:192.0.2.21",
         confidence: "stable",
         observedAt: 100,
         expiresAt: 999,

@@ -8,7 +8,7 @@ describe("proxy pool public DTO", () => {
       type: "mihomo",
       controllerSecret: "legacy-secret",
       mihomo: {
-        controllerUrl: "http://10.11.11.1:9090",
+        controllerUrl: "http://192.0.2.10:9090",
         controllerSecret: "secret",
         selectorName: "selector",
       },
@@ -16,7 +16,7 @@ describe("proxy pool public DTO", () => {
     });
 
     expect(dto.mihomo).toEqual({
-      controllerUrl: "http://10.11.11.1:9090",
+      controllerUrl: "http://192.0.2.10:9090",
       selectorName: "selector",
       controllerSecretConfigured: true,
     });

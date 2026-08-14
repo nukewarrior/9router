@@ -64,7 +64,7 @@ describe("dashboard guard public LLM API access", () => {
   it("rejects remote Host-spoof when real peer IP is non-loopback", async () => {
     const response = await proxy(request("/v1/chat/completions", {
       host: "localhost",
-      "x-9r-real-ip": "10.204.111.34",
+      "x-9r-real-ip": "10.0.0.1",
     }));
 
     expect(response.status).toBe(401);

@@ -12,7 +12,7 @@ function makePool() {
     type: "mihomo",
     isActive: true,
     mihomo: {
-      controllerUrl: "http://10.11.11.1:9090",
+      controllerUrl: "http://192.0.2.10:9090",
       selectorName: "selector",
       cooldown: { baseMs: 300000, multiplier: 3, maxMs: 1800000 },
     },
@@ -27,7 +27,7 @@ function mutatorFor(pool) {
   };
 }
 
-const route = { proxyProvider: "subscription", nodeName: "TW-A30" };
+const route = { proxyProvider: "subscription", nodeName: "Example Taiwan Node A" };
 
 describe("Mihomo node business cooldown", () => {
   it("writes provider-scoped node state and leaves pool status untouched", async () => {
@@ -45,7 +45,7 @@ describe("Mihomo node business cooldown", () => {
     expect(first).toMatchObject({ updated: true, cooldownMs: 300000, lastErrorType: "HTTP_429" });
     expect(pool.isActive).toBe(true);
     expect(pool).not.toHaveProperty("cooldownUntil");
-    expect(pool.mihomoState.proxyProviders.subscription.nodes["TW-A30"].business.opencode).toMatchObject({
+    expect(pool.mihomoState.proxyProviders.subscription.nodes["Example Taiwan Node A"].business.opencode).toMatchObject({
       backoffLevel: 1,
       lastStatus: 429,
       lastErrorType: "HTTP_429",

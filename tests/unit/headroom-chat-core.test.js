@@ -96,7 +96,7 @@ describe("handleChatCore Headroom diagnostics", () => {
     const log = { debug: vi.fn(), info: vi.fn(), warn: vi.fn() };
 
     global.fetch = vi.fn(async () => {
-      throw new Error("failed to fetch https://user:secret@example.com:8787/proxy/v1/compress?token=abc123");
+      throw new Error("failed to fetch https://test-user:test-pass@example.test:8787/proxy/v1/compress?token=test-token");
     });
 
     await handleChatCore({
@@ -106,7 +106,7 @@ describe("handleChatCore Headroom diagnostics", () => {
       log,
       connectionId: "test-conn",
       headroomEnabled: true,
-      headroomUrl: "https://user:secret@example.com:8787/proxy?token=abc123",
+      headroomUrl: "https://test-user:test-pass@example.test:8787/proxy?token=test-token",
       headroomCompressUserMessages: false,
       rtkEnabled: false,
       cavemanEnabled: false,
@@ -119,7 +119,7 @@ describe("handleChatCore Headroom diagnostics", () => {
     });
 
     const logs = JSON.stringify(log.warn.mock.calls);
-    expect(logs).toContain("https://example.com:8787/proxy/v1/compress");
+    expect(logs).toContain("https://example.test:8787/proxy/v1/compress");
     expect(logs).not.toContain("user");
     expect(logs).not.toContain("secret");
     expect(logs).not.toContain("abc123");
@@ -135,7 +135,7 @@ describe("handleChatCore Headroom diagnostics", () => {
       log,
       connectionId: "test-conn",
       headroomEnabled: true,
-      headroomUrl: "https://user:secret@example.com:8787/proxy?token=abc123",
+      headroomUrl: "https://test-user:test-pass@example.test:8787/proxy?token=test-token",
       headroomCompressUserMessages: false,
       rtkEnabled: false,
       cavemanEnabled: false,
@@ -149,10 +149,10 @@ describe("handleChatCore Headroom diagnostics", () => {
 
     const logs = JSON.stringify(log.warn.mock.calls);
     expect(global.fetch).toHaveBeenCalledWith(
-      "https://user:secret@example.com:8787/proxy/v1/compress?token=abc123",
+      "https://test-user:test-pass@example.test:8787/proxy/v1/compress?token=test-token",
       expect.any(Object)
     );
-    expect(logs).toContain("https://example.com:8787/proxy/v1/compress");
+    expect(logs).toContain("https://example.test:8787/proxy/v1/compress");
     expect(logs).not.toContain("user");
     expect(logs).not.toContain("secret");
     expect(logs).not.toContain("abc123");

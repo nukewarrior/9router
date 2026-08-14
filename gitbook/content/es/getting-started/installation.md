@@ -147,7 +147,7 @@ curl http://localhost:20128/health
 
 ```bash
 curl http://localhost:20128/v1/models \
-  -H "Authorization: Bearer your-api-key"
+  -H "Authorization: Bearer ${ROUTER_API_KEY}"
 ```
 
 **Respuesta esperada:**
@@ -169,7 +169,7 @@ curl http://localhost:20128/v1/models \
 
 ```bash
 curl http://localhost:20128/v1/chat/completions \
-  -H "Authorization: Bearer your-api-key" \
+  -H "Authorization: Bearer ${ROUTER_API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "cc/claude-opus-4-5-20251101",

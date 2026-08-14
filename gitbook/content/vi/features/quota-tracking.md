@@ -562,7 +562,7 @@ Optimization:
 
 ```bash
 GET http://localhost:20128/api/quota
-Authorization: Bearer your-api-key
+Authorization: Bearer ${ROUTER_API_KEY}
 
 Response:
 {
@@ -615,7 +615,7 @@ Response:
 
 ```bash
 GET http://localhost:20128/api/usage?period=today
-Authorization: Bearer your-api-key
+Authorization: Bearer ${ROUTER_API_KEY}
 
 Response:
 {

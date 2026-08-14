@@ -11,14 +11,14 @@ listeners:
   - name: opencode-free
     type: mixed
     listen: 0.0.0.0
-    port: 17891
-    proxy: "🤖 OpenCode调度"
+    port: 18080
+    proxy: "Test Selector"
 
 nikki-proxy-groups:
-  - name: "🤖 OpenCode调度"
+  - name: "Test Selector"
     type: select
     use:
-      - 订阅一
+      - Test Provider
     filter: "(?i)🇹🇼|台湾|tw|taiwan|🇯🇵|日本|jp|japan|🇸🇬|新加坡|sg|singapore|🇺🇸|美国|us|usa|united states"
     exclude-filter: "(?i)剩余|流量|套餐|到期|过期|官网|客服|公告|重置|traffic|expire|expired"
 
@@ -30,10 +30,10 @@ Controller 建议只监听 LAN，并限制为 9Router 主机可访问：
 
 ```yaml
 external-controller: 0.0.0.0:9090
-secret: "替换为强 secret"
+secret: "replace-locally"
 ```
 
-不要把 `9090` 或 `17891` 暴露到公网；Controller secret 只填入 9Router 的 Mihomo Pool，不会出现在 GET API 或脚本日志中。
+不要把 `9090` 或 `18080` 暴露到公网；Controller secret 只填入 9Router 的 Mihomo Pool，不会出现在 GET API 或脚本日志中。
 
 ## Controller 预检
 
@@ -47,12 +47,12 @@ curl -H "Authorization: Bearer $MIHOMO_CONTROLLER_SECRET" \
 从 9Router 工作目录执行。`MIHOMO_NODE_NAMES` 使用 Mihomo 返回的精确节点名称；不设置时只验证当前 Selector 节点。
 
 ```bash
-export MIHOMO_CONTROLLER_URL="http://10.11.11.1:9090"
-export MIHOMO_CONTROLLER_SECRET="替换为实际 secret"
-export MIHOMO_SELECTOR="🤖 OpenCode调度"
-export MIHOMO_LISTENER_URL="http://10.11.11.1:17891"
-export MIHOMO_PROVIDER_NAMES="订阅一"
-export MIHOMO_NODE_NAMES="🇹🇼 台湾 A30,🇯🇵 日本 A01"
+export MIHOMO_CONTROLLER_URL="http://192.0.2.10:9090"
+export MIHOMO_CONTROLLER_SECRET="replace-locally"
+export MIHOMO_SELECTOR="Test Selector"
+export MIHOMO_LISTENER_URL="http://198.51.100.10:18080"
+export MIHOMO_PROVIDER_NAMES="Test Provider"
+export MIHOMO_NODE_NAMES="Example Taiwan Node A,Example Japan Node A"
 
 node scripts/validate-mihomo.mjs
 ```
@@ -66,7 +66,7 @@ node scripts/validate-mihomo.mjs
 5. 关闭 listener 后，设置 `MIHOMO_FAILURE_LISTENER_URL` 指向故障地址，脚本必须失败闭环，而不是获得直连结果：
 
 ```bash
-export MIHOMO_FAILURE_LISTENER_URL="http://10.11.11.1:17892"
+export MIHOMO_FAILURE_LISTENER_URL="http://198.51.100.10:18081"
 node scripts/validate-mihomo.mjs
 ```
 
@@ -75,7 +75,7 @@ node scripts/validate-mihomo.mjs
 ```bash
 # 观察 9Router 日志与 Mihomo /connections chain
 # 使用实际 OpenCode Free 模型发起一次请求：
-# TW-A30 -> 429/FreeUsageLimitError -> node cooldown -> JP-A01 -> 200
+# Example Taiwan Node A -> 429/FreeUsageLimitError -> node cooldown -> Example Japan Node A -> 200
 ```
 
 当前开发环境没有用户的 Nikki Controller、listener 或真实出口，因此本阶段只能完成脚本、离线集成测试和静态验收；上述命令需在真实路由器网络中执行。

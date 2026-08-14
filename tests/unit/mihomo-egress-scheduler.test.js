@@ -12,9 +12,9 @@ function makePool() {
     id: "scheduler-pool",
     type: "mihomo",
     isActive: true,
-    proxyUrl: "http://router:17892",
+    proxyUrl: "http://router:18081",
     mihomo: {
-      controllerUrl: "http://10.11.11.1:9090",
+      controllerUrl: "http://192.0.2.10:9090",
       selectorName: "selector",
       providerNames: ["subscription"],
       egressProbeTtlMs: 60000,
@@ -25,7 +25,7 @@ function makePool() {
           nodes: {
             "JP-STALE": { egress: { confidence: "stable", expiresAt: 1, needsProbe: false } },
             "JP-NEEDS": { egress: { confidence: "stable", expiresAt: 9999999999999, needsProbe: true } },
-            "JP-EXPIRING": { egress: { confidence: "stable", expiresAt: 110000, needsProbe: false } },
+            "Example Japan Expiring Node": { egress: { confidence: "stable", expiresAt: 110000, needsProbe: false } },
           },
         },
       },
@@ -105,7 +105,7 @@ describe("Mihomo egress scheduler", () => {
   it("enqueues maintenance without delaying route selection", async () => {
     const pool = makePool();
     const queued = vi.fn(() => ({ queued: true }));
-    const nodes = ["JP-STALE", "JP-NEEDS", "JP-EXPIRING", "JP-UNKNOWN"];
+    const nodes = ["JP-STALE", "JP-NEEDS", "Example Japan Expiring Node", "JP-UNKNOWN"];
     const context = { attemptedNodeKeys: new Set(), attemptedEgressKeys: new Set(), deprioritizedRegions: new Set(), attempts: 0 };
     const startedAt = Date.now();
     const result = await prepareMihomoRouteAttempt({
@@ -119,7 +119,7 @@ describe("Mihomo egress scheduler", () => {
     });
 
     expect(Date.now() - startedAt).toBeLessThan(1000);
-    expect(result.route).toMatchObject({ nodeName: "JP-EXPIRING", attemptStartedAtMs: 100000 });
+    expect(result.route).toMatchObject({ nodeName: "Example Japan Expiring Node", attemptStartedAtMs: 100000 });
     expect(queued).toHaveBeenCalledTimes(4);
     expect(queued.mock.calls.map(([options]) => options.reason)).toEqual([
       "stale",
@@ -132,7 +132,7 @@ describe("Mihomo egress scheduler", () => {
   it("queues a bounded batch without waiting for probe samples", async () => {
     const pool = makePool();
     const queueProbe = vi.fn(() => ({ queued: 2, skipped: 0 }));
-    const nodes = ["JP-STALE", "JP-NEEDS", "JP-EXPIRING", "JP-UNKNOWN"];
+    const nodes = ["JP-STALE", "JP-NEEDS", "Example Japan Expiring Node", "JP-UNKNOWN"];
     const result = await probeMihomoNodesEgress({
       poolId: pool.id,
       getPool: async () => pool,

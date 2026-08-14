@@ -34,7 +34,7 @@ describe("proxyAwareFetch managed dispatcher", () => {
     fetchMock.mockResolvedValue({ ok: true, status: 200 });
     const options = {
       connectionProxyEnabled: true,
-      connectionProxyUrl: "http://router:17891",
+      connectionProxyUrl: "http://router:18080",
       strictProxy: true,
       ephemeralProxyDispatcher: true,
     };
@@ -60,7 +60,7 @@ describe("proxyAwareFetch managed dispatcher", () => {
 
     const response = await proxyAwareFetch("https://example.com/stream", {}, {
       connectionProxyEnabled: true,
-      connectionProxyUrl: "http://router:17891",
+      connectionProxyUrl: "http://router:18080",
       strictProxy: true,
       ephemeralProxyDispatcher: true,
     });
@@ -82,7 +82,7 @@ describe("proxyAwareFetch managed dispatcher", () => {
   it("fails closed when strict no_proxy would bypass the managed listener", async () => {
     await expect(proxyAwareFetch("https://example.com", {}, {
       connectionProxyEnabled: true,
-      connectionProxyUrl: "http://router:17891",
+      connectionProxyUrl: "http://router:18080",
       connectionNoProxy: "example.com",
       strictProxy: true,
     })).rejects.toThrow(/no_proxy/i);

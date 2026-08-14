@@ -244,7 +244,7 @@ Problemas comunes y soluciones al usar 9Router.
 3. **Lista los modelos disponibles:**
    ```bash
    curl http://localhost:20128/v1/models \
-     -H "Authorization: Bearer your-api-key"
+     -H "Authorization: Bearer ${ROUTER_API_KEY}"
    ```
 
 4. **Reconecta el proveedor:**
@@ -339,7 +339,7 @@ Problemas comunes y soluciones al usar 9Router.
 4. **Prueba la API key:**
    ```bash
    curl http://localhost:20128/v1/models \
-     -H "Authorization: Bearer 9r_your_key"
+     -H "Authorization: Bearer ${ROUTER_API_KEY}"
    ```
 
 ---

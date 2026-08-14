@@ -10,9 +10,9 @@ function makePool(id = "pool-route") {
     id,
     type: "mihomo",
     isActive: true,
-    proxyUrl: "http://router:17891",
+    proxyUrl: "http://router:18080",
     mihomo: {
-      controllerUrl: "http://10.11.11.1:9090",
+      controllerUrl: "http://192.0.2.10:9090",
       selectorName: "selector",
       providerNames: ["subscription"],
       maxAttemptsPerRequest: 6,
@@ -43,10 +43,10 @@ describe("Mihomo route candidate selection", () => {
   it("deprioritizes a rate-limited region for the remainder of one request", async () => {
     const pool = makePool();
     const nodes = [
-      { name: "TW-A30" },
-      { name: "TW-A29" },
-      { name: "JP-A01" },
-      { name: "US-B01" },
+      { name: "Example Taiwan Node A" },
+      { name: "Example Taiwan Node B" },
+      { name: "Example Japan Node A" },
+      { name: "Example United States Node A" },
     ];
     const context = { attemptedNodeKeys: new Set(), deprioritizedRegions: new Set(), attempts: 0 };
     const getPool = async () => pool;
@@ -57,23 +57,23 @@ describe("Mihomo route candidate selection", () => {
     const second = await prepareMihomoRouteAttempt({ poolId: pool.id, businessProviderId: "opencode", routeContext: context, getPool, makeClient, nowMs: 200 });
     expect(first.route.region).toBe("TW");
     expect(second.route.region).toBe("JP");
-    expect(second.route.nodeName).toBe("JP-A01");
+    expect(second.route.nodeName).toBe("Example Japan Node A");
   });
 
   it("allows a deprioritized region only when other regions have no eligible nodes", async () => {
     const pool = makePool("pool-fallback-region");
     pool.mihomoState.proxyProviders.subscription = {
-      nodes: { "JP-A01": { business: { opencode: { cooldownUntil: new Date(9999999999999).toISOString(), backoffLevel: 1 } } } },
+      nodes: { "Example Japan Node A": { business: { opencode: { cooldownUntil: new Date(9999999999999).toISOString(), backoffLevel: 1 } } } },
     };
-    const nodes = [{ name: "TW-A30" }, { name: "TW-A29" }, { name: "JP-A01" }];
+    const nodes = [{ name: "Example Taiwan Node A" }, { name: "Example Taiwan Node B" }, { name: "Example Japan Node A" }];
     const context = {
-      attemptedNodeKeys: new Set(["subscription\0TW-A30"]),
+      attemptedNodeKeys: new Set(["subscription\0Example Taiwan Node A"]),
       deprioritizedRegions: new Set(["TW"]),
       attempts: 1,
       maxAttempts: 3,
     };
     const result = await prepareMihomoRouteAttempt({ poolId: pool.id, businessProviderId: "opencode", routeContext: context, getPool: async () => pool, makeClient: () => clientFor(nodes), nowMs: 100 });
-    expect(result.route).toMatchObject({ nodeName: "TW-A29", region: "TW" });
+    expect(result.route).toMatchObject({ nodeName: "Example Taiwan Node B", region: "TW" });
   });
 
   it("never repeats a node and enforces max attempts", async () => {
@@ -92,7 +92,7 @@ describe("Mihomo route candidate selection", () => {
 
   it("uses a process-local node cursor across fresh requests", async () => {
     const pool = makePool("pool-fairness");
-    const nodes = [{ name: "JP-A01" }, { name: "JP-A02" }];
+    const nodes = [{ name: "Example Japan Node A" }, { name: "Example Japan Node B" }];
     const firstContext = { attemptedNodeKeys: new Set(), deprioritizedRegions: new Set(), attempts: 0 };
     const secondContext = { attemptedNodeKeys: new Set(), deprioritizedRegions: new Set(), attempts: 0 };
     const options = { poolId: pool.id, businessProviderId: "opencode", getPool: async () => pool, makeClient: () => clientFor(nodes) };
@@ -104,7 +104,7 @@ describe("Mihomo route candidate selection", () => {
 
   it("keeps regionOrder as priority across fresh requests", async () => {
     const pool = makePool("pool-region-priority");
-    const nodes = [{ name: "TW-A01" }, { name: "TW-A02" }, { name: "JP-A01" }];
+    const nodes = [{ name: "Example Taiwan Node A" }, { name: "Example Taiwan Node B" }, { name: "Example Japan Node A" }];
     const options = {
       poolId: pool.id,
       businessProviderId: "opencode",
@@ -124,11 +124,11 @@ describe("Mihomo route candidate selection", () => {
 
   it("keeps node routing unchanged while exposing a distinct-egress shadow candidate", async () => {
     const pool = makePool("pool-shadow");
-    const nodes = [{ name: "JP-A01" }, { name: "JP-A02" }];
+    const nodes = [{ name: "Example Japan Node A" }, { name: "Example Japan Node B" }];
     pool.mihomoState.proxyProviders.subscription = {
       nodes: {
-        "JP-A01": { egress: { ip: "1.2.3.5", family: 4, identityKey: "4:1.2.3.5", confidence: "stable", expiresAt: 9999999999999 } },
-        "JP-A02": { egress: { ip: "1.2.3.4", family: 4, identityKey: "4:1.2.3.4", confidence: "stable", expiresAt: 9999999999999 } },
+        "Example Japan Node A": { egress: { ip: "192.0.2.21", family: 4, identityKey: "4:192.0.2.21", confidence: "stable", expiresAt: 9999999999999 } },
+        "Example Japan Node B": { egress: { ip: "192.0.2.20", family: 4, identityKey: "4:192.0.2.20", confidence: "stable", expiresAt: 9999999999999 } },
       },
     };
     const context = { attemptedNodeKeys: new Set(), deprioritizedRegions: new Set(), attempts: 0 };
@@ -141,9 +141,9 @@ describe("Mihomo route candidate selection", () => {
       nowMs: 100,
     });
 
-    expect(result.route.nodeName).toBe("JP-A01");
-    expect(result.route.egressIdentityKey).toBe("4:1.2.3.5");
-    expect(result.shadowRoute).toMatchObject({ nodeName: "JP-A02", egressIdentityKey: "4:1.2.3.4" });
+    expect(result.route.nodeName).toBe("Example Japan Node A");
+    expect(result.route.egressIdentityKey).toBe("4:192.0.2.21");
+    expect(result.shadowRoute).toMatchObject({ nodeName: "Example Japan Node B", egressIdentityKey: "4:192.0.2.20" });
     expect(context.attemptedEgressKeys).toEqual(new Set());
   });
 
@@ -152,11 +152,11 @@ describe("Mihomo route candidate selection", () => {
     pool.mihomo.egressScopedCooldown = true;
     pool.mihomoState.proxyProviders.subscription = {
       nodes: {
-        "JP-A01": {
+        "Example Japan Node A": {
           egress: {
-            ip: "1.2.3.5",
+            ip: "192.0.2.21",
             family: 4,
-            identityKey: "4:1.2.3.5",
+            identityKey: "4:192.0.2.21",
             confidence: "stable",
             observedAt: 50,
             expiresAt: 1000,
@@ -170,13 +170,13 @@ describe("Mihomo route candidate selection", () => {
       businessProviderId: "opencode",
       routeContext: context,
       getPool: async () => pool,
-      makeClient: () => clientFor([{ name: "JP-A01" }]),
+      makeClient: () => clientFor([{ name: "Example Japan Node A" }]),
       nowMs: 100,
     });
 
     expect(result.route.egressSnapshot).toEqual({
       startedAtMs: 100,
-      identityKey: "4:1.2.3.5",
+      identityKey: "4:192.0.2.21",
       confidence: "stable",
       observedAt: 50,
       expiresAt: 1000,
@@ -184,15 +184,15 @@ describe("Mihomo route candidate selection", () => {
     });
     expect(Object.isFrozen(result.route.egressSnapshot)).toBe(true);
 
-    pool.mihomoState.proxyProviders.subscription.nodes["JP-A01"].egress = {
-      ip: "9.9.9.9",
+    pool.mihomoState.proxyProviders.subscription.nodes["Example Japan Node A"].egress = {
+      ip: "203.0.113.31",
       family: 4,
-      identityKey: "4:9.9.9.9",
+      identityKey: "4:203.0.113.31",
       confidence: "stable",
       observedAt: 101,
       expiresAt: 2000,
     };
-    expect(result.route.egressSnapshot.identityKey).toBe("4:1.2.3.5");
+    expect(result.route.egressSnapshot.identityKey).toBe("4:192.0.2.21");
     expect(result.route.egressSnapshot.scopeEligible).toBe(true);
   });
 
@@ -205,11 +205,11 @@ describe("Mihomo route candidate selection", () => {
     pool.mihomo.egressScopedCooldown = egressScopedCooldown;
     pool.mihomoState.proxyProviders.subscription = {
       nodes: {
-        "JP-A01": {
+        "Example Japan Node A": {
           egress: {
-            ip: "1.2.3.5",
+            ip: "192.0.2.21",
             family: 4,
-            identityKey: "4:1.2.3.5",
+            identityKey: "4:192.0.2.21",
             observedAt: 50,
             ...egress,
           },
@@ -221,12 +221,12 @@ describe("Mihomo route candidate selection", () => {
       businessProviderId: "opencode",
       routeContext: { attemptedNodeKeys: new Set(), deprioritizedRegions: new Set(), attempts: 0 },
       getPool: async () => pool,
-      makeClient: () => clientFor([{ name: "JP-A01" }]),
+      makeClient: () => clientFor([{ name: "Example Japan Node A" }]),
       nowMs: 100,
     });
 
     expect(result.route.egressSnapshot).toMatchObject({
-      identityKey: "4:1.2.3.5",
+      identityKey: "4:192.0.2.21",
       confidence: egress.confidence,
       scopeEligible: false,
     });

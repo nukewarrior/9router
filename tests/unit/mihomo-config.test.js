@@ -6,9 +6,9 @@ import {
 } from "../../src/lib/network/mihomoConfig.js";
 
 const baseConfig = {
-  controllerUrl: "http://10.11.11.1:9090",
+  controllerUrl: "http://192.0.2.10:9090",
   controllerSecret: "secret",
-  selectorName: "🤖 OpenCode调度",
+  selectorName: "Test Selector",
 };
 
 describe("Mihomo pool configuration", () => {

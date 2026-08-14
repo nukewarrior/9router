@@ -91,7 +91,7 @@ console.log(response.choices[0].message.content);
 ```bash
 curl http://localhost:20128/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer your-api-key-from-dashboard" \
+  -H "Authorization: Bearer ${ROUTER_API_KEY}" \
   -d '{
     "model": "cc/claude-sonnet-4-20250514",
     "messages": [
@@ -110,7 +110,7 @@ POST http://localhost:20128/v1/chat/completions
 **Headers:**
 ```
 Content-Type: application/json
-Authorization: Bearer your-api-key-from-dashboard
+Authorization: Bearer ${ROUTER_API_KEY}
 ```
 
 **Body:**

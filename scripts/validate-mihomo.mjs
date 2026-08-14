@@ -1,7 +1,5 @@
 import { ProxyAgent, fetch as undiciFetch } from "undici";
 
-const DEFAULT_CONTROLLER_URL = "http://10.11.11.1:9090";
-const DEFAULT_LISTENER_URL = "http://10.11.11.1:17891";
 const DEFAULT_ECHO_URL = "https://api.ipify.org?format=json";
 const DEFAULT_TIMEOUT_MS = 10000;
 
@@ -145,15 +143,17 @@ async function expectListenerFailure(listenerUrl, targetUrl, timeoutMs) {
 }
 
 async function main() {
-  const controllerUrl = env("MIHOMO_CONTROLLER_URL", DEFAULT_CONTROLLER_URL);
+  const controllerUrl = env("MIHOMO_CONTROLLER_URL");
   const secret = env("MIHOMO_CONTROLLER_SECRET");
   const selectorName = env("MIHOMO_SELECTOR");
-  const listenerUrl = env("MIHOMO_LISTENER_URL", DEFAULT_LISTENER_URL);
+  const listenerUrl = env("MIHOMO_LISTENER_URL");
   const echoUrl = env("MIHOMO_IP_ECHO_URL", DEFAULT_ECHO_URL);
   const providerNames = listEnv("MIHOMO_PROVIDER_NAMES");
   const requestedNodes = listEnv("MIHOMO_NODE_NAMES");
   const timeoutMs = Math.max(1000, Number(env("MIHOMO_TIMEOUT_MS", DEFAULT_TIMEOUT_MS)) || DEFAULT_TIMEOUT_MS);
 
+  assertCondition(controllerUrl, "MIHOMO_CONTROLLER_URL is required");
+  assertCondition(listenerUrl, "MIHOMO_LISTENER_URL is required");
   assertCondition(selectorName, "MIHOMO_SELECTOR is required");
   const client = createValidationClient({ controllerUrl, secret, timeoutMs });
 

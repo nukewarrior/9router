@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { toPublicMihomoEgressProbeResponse } from "../../src/lib/network/mihomoEgressDiscovery.js";
 
 const INTERNAL_POOL = {
-  proxyUrl: "http://nikki:secret@10.11.11.1:17891",
-  mihomo: { controllerSecret: "mihomo-controller-secret" },
+  proxyUrl: "http://test-user:test-pass@198.51.100.10:18080",
+  mihomo: { controllerSecret: "test-controller-secret" },
   mihomoState: { proxyProviders: { subscription: { nodes: {} } } },
 };
 
@@ -13,22 +13,22 @@ function probeResult() {
     route: {
       proxyPoolId: "pool-1",
       proxyProvider: "subscription",
-      nodeName: "TW-A10",
+      nodeName: "Example Taiwan Node A",
       selectorName: "selector",
     },
     egress: {
-      ip: "61.219.114.43",
+      ip: "198.51.100.20",
       family: 4,
-      identityKey: "4:61.219.114.43",
+      identityKey: "4:198.51.100.20",
       confidence: "stable",
-      observedIps: ["61.219.114.43"],
+      observedIps: ["198.51.100.20"],
       sampleCount: 2,
       successfulSamples: 2,
       observedAt: 1000,
       expiresAt: 61000,
       needsProbe: false,
     },
-    samples: ["61.219.114.43", "61.219.114.43"],
+    samples: ["198.51.100.20", "198.51.100.20"],
     errors: [],
     pool: INTERNAL_POOL,
   };
@@ -40,11 +40,11 @@ describe("Mihomo egress probe public response", () => {
     const serialized = JSON.stringify(response);
 
     expect(response).not.toHaveProperty("pool");
-    expect(serialized).not.toContain("mihomo-controller-secret");
-    expect(serialized).not.toContain("nikki:secret");
+    expect(serialized).not.toContain("test-controller-secret");
+    expect(serialized).not.toContain("test-user:test-pass");
     expect(serialized).not.toContain("controllerSecret");
     expect(serialized).not.toContain("mihomoState");
-    expect(response).toMatchObject({ ok: true, route: { nodeName: "TW-A10" }, egress: { identityKey: "4:61.219.114.43" } });
+    expect(response).toMatchObject({ ok: true, route: { nodeName: "Example Taiwan Node A" }, egress: { identityKey: "4:198.51.100.20" } });
   });
 
   it("removes internal pool data from every item in a batch response", () => {
@@ -54,7 +54,7 @@ describe("Mihomo egress probe public response", () => {
       results: [probeResult()],
       directory: {
         selectorName: "selector",
-        nodes: [{ nodeName: "TW-A10", proxyProvider: "subscription", egress: probeResult().egress }],
+        nodes: [{ nodeName: "Example Taiwan Node A", proxyProvider: "subscription", egress: probeResult().egress }],
       },
       summary: { leafNodes: 1, freshStableMappings: 1 },
       pool: INTERNAL_POOL,
@@ -63,8 +63,8 @@ describe("Mihomo egress probe public response", () => {
 
     expect(response).not.toHaveProperty("pool");
     expect(response.results[0]).not.toHaveProperty("pool");
-    expect(serialized).not.toContain("mihomo-controller-secret");
-    expect(serialized).not.toContain("nikki:secret");
+    expect(serialized).not.toContain("test-controller-secret");
+    expect(serialized).not.toContain("test-user:test-pass");
     expect(serialized).not.toContain("mihomoState");
   });
 });

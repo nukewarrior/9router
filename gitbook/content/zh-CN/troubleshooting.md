@@ -244,7 +244,7 @@
 3. **列出可用模型:**
    ```bash
    curl http://localhost:20128/v1/models \
-     -H "Authorization: Bearer your-api-key"
+     -H "Authorization: Bearer ${ROUTER_API_KEY}"
    ```
 
 4. **重新连接提供商:**
@@ -339,7 +339,7 @@
 4. **测试 API key:**
    ```bash
    curl http://localhost:20128/v1/models \
-     -H "Authorization: Bearer 9r_your_key"
+     -H "Authorization: Bearer ${ROUTER_API_KEY}"
    ```
 
 ---

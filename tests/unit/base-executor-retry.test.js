@@ -112,7 +112,7 @@ describe("BaseExecutor.execute — proxy option propagation", () => {
     fetchMock.mockResolvedValueOnce(res(200));
     const proxyOptions = {
       connectionProxyEnabled: true,
-      connectionProxyUrl: "http://router:17891",
+      connectionProxyUrl: "http://router:18080",
       strictProxy: true,
       ephemeralProxyDispatcher: true,
     };
