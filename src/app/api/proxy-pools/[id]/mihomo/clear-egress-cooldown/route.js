@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getProxyPoolById } from "@/models";
 import { clearMihomoEgressCooldown } from "@/lib/network/mihomoState.js";
+import { rebuildHealthyMihomoSnapshot } from "@/lib/network/mihomoHealthPool.js";
 import { isMihomoProxyPool } from "@/lib/network/proxyPoolTypes.js";
 
 function requiredText(value, fieldName) {
@@ -22,13 +23,14 @@ export async function POST(request, { params }) {
 
     const body = await request.json();
     const identityKey = requiredText(body?.identityKey, "identityKey");
-    const businessProvider = requiredText(body?.businessProvider, "businessProvider");
+    const modelId = requiredText(body?.modelId, "modelId");
     const result = await clearMihomoEgressCooldown({
       proxyPoolId: id,
       identityKey,
-      businessProviderId: businessProvider,
+      modelId,
     });
-    return NextResponse.json({ ok: result.updated, identityKey, businessProvider });
+    rebuildHealthyMihomoSnapshot({ pool: result.pool, directory: null, modelId });
+    return NextResponse.json({ ok: result.updated, identityKey, modelId, scope: "model-egress" });
   } catch (error) {
     return NextResponse.json({ error: error.message || "Failed to clear egress cooldown" }, { status: error.status || 400 });
   }

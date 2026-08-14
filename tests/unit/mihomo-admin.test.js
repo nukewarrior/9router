@@ -6,6 +6,7 @@ import {
   testMihomoPool,
 } from "../../src/lib/network/mihomoAdmin.js";
 import { clearMihomoNodeDirectoryCache } from "../../src/lib/network/mihomoState.js";
+import { createEmptyMihomoState } from "../../src/lib/network/mihomoConfig.js";
 
 function makePool() {
   return {
@@ -20,7 +21,7 @@ function makePool() {
       providerNames: ["subscription"],
       syncTtlMs: 30000,
     },
-    mihomoState: { proxyProviders: {}, egressIdentities: {} },
+    mihomoState: createEmptyMihomoState(),
   };
 }
 
@@ -70,22 +71,25 @@ describe("Mihomo admin operations", () => {
             observedAt: Date.now(),
             expiresAt: Date.now() + 60000,
           },
-          business: {
-            opencode: {
-              cooldownUntil: new Date(Date.now() + 60000).toISOString(),
-              lastStatus: 429,
-              lastErrorType: "HTTP_429",
-            },
+          transport: {
+            status: "healthy",
+            consecutiveFailures: 0,
           },
         },
       },
     };
+    pool.mihomoState.maintenance.selectedModels = ["model-a"];
     pool.mihomoState.egressIdentities["4:198.51.100.20"] = {
-      business: { opencode: { cooldownUntil: new Date(Date.now() + 60000).toISOString(), backoffLevel: 1 } },
+      models: { "model-a": {
+        status: "cooling",
+        cooldownUntil: new Date(Date.now() + 60000).toISOString(),
+        lastStatus: 429,
+        lastErrorType: "HTTP_429",
+      } },
     };
-    const result = await getMihomoNodeStatus({ pool, makeClient: () => fakeClient() });
+    const result = await getMihomoNodeStatus({ pool, modelId: "model-a", makeClient: () => fakeClient() });
     expect(result.selector).toMatchObject({ name: "selector", now: "🇹🇼 Example Taiwan Node A" });
-    expect(result.nodes[0].providerState.opencode).toMatchObject({ status: "cooldown", lastStatus: 429 });
+    expect(result.nodes[0].providerState["model-a"]).toMatchObject({ status: "cooling", lastStatus: 429 });
     expect(result.nodes[0]).toMatchObject({
       exitIp: "198.51.100.20",
       exitIpFamily: 4,
@@ -95,13 +99,13 @@ describe("Mihomo admin operations", () => {
       exitGroupSize: 1,
       exitCooldownUntil: expect.any(String),
     });
-    expect(result.nodes[1].providerState.opencode.status).toBe("unknown");
+    expect(result.nodes[1].providerState["model-a"].status).toBe("warming");
     expect(result.summary).toMatchObject({ leafNodes: 2, probedNodes: 1, freshStableMappings: 1, distinctExitIps: 1 });
   });
 
   it("reports egress cooldown as the effective status only when enabled and fresh", async () => {
     const pool = makePool();
-    pool.mihomo.egressScopedCooldown = true;
+    pool.mihomoState.maintenance.selectedModels = ["model-a"];
     pool.mihomoState.proxyProviders.subscription = {
       nodes: {
         "🇹🇼 Example Taiwan Node A": {
@@ -113,25 +117,24 @@ describe("Mihomo admin operations", () => {
             observedAt: 100,
             expiresAt: 1000000,
           },
-          business: { opencode: { lastSuccessAt: new Date(100).toISOString() } },
+          transport: { status: "healthy", consecutiveFailures: 0 },
         },
       },
     };
     pool.mihomoState.egressIdentities["4:198.51.100.20"] = {
-      business: { opencode: { cooldownUntil: new Date(500000).toISOString() } },
+      models: { "model-a": {
+        status: "cooling",
+        cooldownUntil: new Date(500000).toISOString(),
+      } },
     };
 
-    const result = await getMihomoNodeStatus({ pool, makeClient: () => fakeClient(), nowMs: 1000 });
+    const result = await getMihomoNodeStatus({ pool, modelId: "model-a", makeClient: () => fakeClient(), nowMs: 1000 });
     expect(result.nodes[0]).toMatchObject({
-      effectiveStatus: "cooldown",
-      cooldownScope: "egress",
+      effectiveStatus: "cooling",
+      cooldownScope: "model-egress",
       effectiveCooldownUntil: "1970-01-01T00:08:20.000Z",
-      providerState: { opencode: { status: "cooldown", cooldownScope: "egress", nodeCooldownUntil: null } },
+      providerState: { "model-a": { status: "cooling", cooldownScope: "model-egress", nodeCooldownUntil: null } },
     });
-
-    pool.mihomo.egressScopedCooldown = false;
-    const disabled = await getMihomoNodeStatus({ pool, makeClient: () => fakeClient(), nowMs: 1000 });
-    expect(disabled.nodes[0]).toMatchObject({ effectiveStatus: "healthy", cooldownScope: null, effectiveCooldownUntil: null });
   });
 
   it("maps invalid configuration to a client-safe 400 response", () => {

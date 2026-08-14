@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getProxyPoolById } from "@/models";
-import { clearMihomoRouteCooldown } from "@/lib/network/mihomoState.js";
+import { clearMihomoNodeTransportCooldown, migrateMihomoState } from "@/lib/network/mihomoState.js";
+import { rebuildHealthyMihomoSnapshot } from "@/lib/network/mihomoHealthPool.js";
 import { isMihomoProxyPool } from "@/lib/network/proxyPoolTypes.js";
 
 function requiredText(value, fieldName) {
@@ -25,13 +26,15 @@ export async function POST(request, { params }) {
       proxyProvider: requiredText(body?.proxyProvider, "proxyProvider"),
       nodeName: requiredText(body?.nodeName, "nodeName"),
     };
-    const businessProvider = requiredText(body?.businessProvider, "businessProvider");
-    const result = await clearMihomoRouteCooldown({
+    const result = await clearMihomoNodeTransportCooldown({
       proxyPoolId: id,
       route,
-      businessProviderId: businessProvider,
     });
-    return NextResponse.json({ ok: result.updated, route, businessProvider });
+    const state = migrateMihomoState(result.pool?.mihomoState);
+    for (const modelId of state.maintenance.selectedModels) {
+      rebuildHealthyMihomoSnapshot({ pool: result.pool, directory: null, modelId });
+    }
+    return NextResponse.json({ ok: result.updated, route, scope: "node-transport" });
   } catch (error) {
     return NextResponse.json({ error: error.message || "Failed to clear Mihomo cooldown" }, { status: error.status || 400 });
   }

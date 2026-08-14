@@ -616,6 +616,29 @@ export async function recordMihomoNodeTransportSuccess({
   return { updated, stale, pool, route };
 }
 
+export async function clearMihomoNodeTransportCooldown({
+  proxyPoolId,
+  route,
+  mutatePool = defaultMutateProxyPool,
+} = {}) {
+  let updated = false;
+  const pool = await mutatePool(proxyPoolId, (current) => {
+    if (!current?.mihomo || typeof current.mihomo !== "object") return current;
+    const { nodeState } = getMutableNodeState(current, route);
+    nodeState.transport = {
+      ...normalizeTransportRecord(nodeState.transport),
+      status: "healthy",
+      consecutiveFailures: 0,
+      cooldownUntil: null,
+      lastErrorType: null,
+      lastError: null,
+    };
+    updated = true;
+    return current;
+  });
+  return { updated, pool, route };
+}
+
 function getCooldownMs(config, previousState, resetsAtMs, nowMs) {
   const reset = Number(resetsAtMs);
   if (Number.isFinite(reset) && reset > nowMs) return Math.min(reset - nowMs, config.cooldown.maxMs);

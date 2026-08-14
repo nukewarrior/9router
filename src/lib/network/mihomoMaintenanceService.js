@@ -367,7 +367,7 @@ export function createMihomoMaintenanceService({
     nodeVersions = null,
   }) {
     const expectedFingerprint = configFingerprint(config);
-    const keys = directoryKeySet(directory);
+    const keys = directory ? directoryKeySet(directory) : null;
     return (current) => {
       if (!isActiveMihomoPool(current)) return false;
       if (state.cycleId !== cycleId || state.abortController?.signal.aborted) return false;
@@ -379,7 +379,7 @@ export function createMihomoMaintenanceService({
       }
       if (configFingerprint(currentConfig) !== expectedFingerprint) return false;
       if (modelId && !state.selectedModels.includes(modelId)) return false;
-      if (nodeKeys) {
+      if (nodeKeys && keys) {
         for (const key of nodeKeys) {
           if (!keys.has(key)) return false;
         }
@@ -391,7 +391,7 @@ export function createMihomoMaintenanceService({
             proxyProvider: key.slice(0, separator),
             nodeName: key.slice(separator + 1),
           };
-          if (!keys.has(key) || mappingVersion(current, node) !== expectedVersion) return false;
+          if ((keys && !keys.has(key)) || mappingVersion(current, node) !== expectedVersion) return false;
         }
       }
       return true;
@@ -511,9 +511,22 @@ export function createMihomoMaintenanceService({
     return Promise.all(jobs);
   }
 
-  async function runBusinessJobs({ poolId, pool, config, directory, groups, state, cycleId, selectedModels }) {
+  async function runBusinessJobs({
+    poolId,
+    pool,
+    config,
+    directory,
+    groups,
+    state,
+    cycleId,
+    selectedModels,
+    modelId = null,
+    identityKey = null,
+  }) {
+    const requestedModels = modelId ? selectedModels.filter((selectedModelId) => selectedModelId === modelId) : selectedModels;
+    const requestedGroups = identityKey ? groups.filter((group) => group.identityKey === identityKey) : groups;
     const checked = new Set();
-    const total = selectedModels.length * groups.length;
+    const total = requestedModels.length * requestedGroups.length;
     await updateMaintenance(poolId, {
       status: "probing-business",
       totalBusinessChecks: total,
@@ -525,10 +538,11 @@ export function createMihomoMaintenanceService({
       if (state.abortController.signal.aborted || !sameModels(selectedModels, state.selectedModels)) return { canceled: true };
       const currentPool = await getPool(poolId);
       if (!isActiveMihomoPool(currentPool)) return { canceled: true };
-      const currentGroups = buildMihomoEgressGroupEntries({ pool: currentPool, directory, nowMs: now() });
+      const currentGroups = buildMihomoEgressGroupEntries({ pool: currentPool, directory, nowMs: now() })
+        .filter((group) => !identityKey || group.identityKey === identityKey);
       const selected = chooseBusinessCombination({
         pool: currentPool,
-        models: selectedModels,
+        models: requestedModels,
         groups: currentGroups,
         checked,
         nowMs: now(),
@@ -618,13 +632,132 @@ export function createMihomoMaintenanceService({
         healthyByModel: currentHealthyCounts(refreshed, selectedModels, refreshedGroups, now()),
       });
     }
-    return { canceled: false, completed: checked.size };
+    return { canceled: false, completed: checked.size, total };
+  }
+
+  async function executeScopedCycle({ poolId, state, cycleId, config, selectedModels, request }) {
+    let pool = await getPool(poolId);
+    if (!isActiveMihomoPool(pool)) return { canceled: true };
+    const completedAt = now();
+
+    if (request.scope === "inventory") {
+      await updateMaintenance(poolId, {
+        cycleId,
+        status: "discovering",
+        startedAt: iso(completedAt),
+        completedAt: null,
+        nextRunAt: null,
+        selectedModels,
+        lastError: null,
+      });
+      const client = makeClient({
+        controllerUrl: config.controllerUrl,
+        secret: config.controllerSecret,
+        timeoutMs: config.controllerTimeoutMs,
+      });
+      const directory = await loadFreshDirectory(pool, config, client);
+      if (state.abortController.signal.aborted) return { canceled: true };
+      await mutate(poolId, (current) => {
+        if (!isActiveMihomoPool(current)) return current;
+        current.mihomoState = persistInventoryState(current, directory);
+        return current;
+      });
+      pool = await getPool(poolId);
+      const mappedNodeCount = directory.nodes.filter((node) => isMihomoStableEgress(getMihomoNodeEgress(pool, node), now())).length;
+      const groups = buildMihomoEgressGroupEntries({ pool, directory, nowMs: now() });
+      await updateMaintenance(poolId, {
+        status: "probing-egress",
+        nodeCount: directory.nodes.length,
+        mappedNodeCount,
+        distinctEgressCount: groups.length,
+        totalBusinessChecks: 0,
+        completedBusinessChecks: 0,
+        healthyByModel: currentHealthyCounts(pool, selectedModels, groups, now()),
+      });
+      await rebuildPoolSnapshots(poolId, directory, selectedModels);
+      await runEgressJobs({ poolId, pool, config, directory, state, cycleId });
+      if (state.abortController.signal.aborted) return { canceled: true };
+      pool = await rebuildPoolSnapshots(poolId, directory, selectedModels);
+      const finalGroups = buildMihomoEgressGroupEntries({ pool, directory, nowMs: now() });
+      const finishedAt = now();
+      await updateMaintenance(poolId, {
+        cycleId,
+        status: "complete",
+        completedAt: iso(finishedAt),
+        nextRunAt: iso(finishedAt + config.inventoryRefreshMs),
+        selectedModels,
+        nodeCount: directory.nodes.length,
+        mappedNodeCount: directory.nodes.filter((node) => isMihomoStableEgress(getMihomoNodeEgress(pool, node), finishedAt)).length,
+        distinctEgressCount: finalGroups.length,
+        totalBusinessChecks: 0,
+        completedBusinessChecks: 0,
+        healthyByModel: currentHealthyCounts(pool, selectedModels, finalGroups, finishedAt),
+        lastError: null,
+      });
+      state.nextRunAt = finishedAt + config.inventoryRefreshMs;
+      return { canceled: false, completed: 0, total: 0 };
+    }
+
+    const stateSnapshot = migrateMihomoState(pool.mihomoState).maintenance;
+    const groups = buildMihomoEgressGroupEntries({ pool, directory: null, nowMs: now() });
+    await updateMaintenance(poolId, {
+      cycleId,
+      status: "probing-business",
+      startedAt: iso(completedAt),
+      completedAt: null,
+      nextRunAt: stateSnapshot.nextRunAt || null,
+      selectedModels,
+      nodeCount: stateSnapshot.nodeCount,
+      mappedNodeCount: stateSnapshot.mappedNodeCount,
+      distinctEgressCount: groups.length,
+      lastError: null,
+    });
+    await rebuildPoolSnapshots(poolId, null, selectedModels);
+    const matrixResult = await runBusinessJobs({
+      poolId,
+      pool,
+      config,
+      directory: null,
+      groups,
+      state,
+      cycleId,
+      selectedModels,
+      modelId: request.modelId,
+      identityKey: request.scope === "egress" ? request.identityKey : null,
+    });
+    if (matrixResult.canceled || state.abortController.signal.aborted) return { canceled: true };
+    pool = await rebuildPoolSnapshots(poolId, null, selectedModels);
+    const finalGroups = buildMihomoEgressGroupEntries({ pool, directory: null, nowMs: now() });
+    const finishedAt = now();
+    const nextRunAt = finiteTime(stateSnapshot.nextRunAt) > finishedAt
+      ? stateSnapshot.nextRunAt
+      : iso(finishedAt + config.inventoryRefreshMs);
+    await updateMaintenance(poolId, {
+      cycleId,
+      status: "complete",
+      completedAt: iso(finishedAt),
+      nextRunAt,
+      selectedModels,
+      nodeCount: stateSnapshot.nodeCount,
+      mappedNodeCount: stateSnapshot.mappedNodeCount,
+      distinctEgressCount: finalGroups.length,
+      totalBusinessChecks: matrixResult.total,
+      completedBusinessChecks: matrixResult.completed,
+      healthyByModel: currentHealthyCounts(pool, selectedModels, finalGroups, finishedAt),
+      lastError: null,
+    });
+    state.nextRunAt = finiteTime(nextRunAt);
+    return matrixResult;
   }
 
   async function executeCycle(poolId, state, reason) {
     const cycleId = createCycleId();
     state.cycleId = cycleId;
     state.abortController = new AbortController();
+    const canConsumeRefresh = reason.includes("manual:") || reason === "wake-rerun";
+    const refreshRequest = canConsumeRefresh
+      ? state.refreshRequests.shift() || { scope: "all", modelId: null, identityKey: null }
+      : { scope: "all", modelId: null, identityKey: null };
     let pool = await getPool(poolId);
     if (!isActiveMihomoPool(pool)) return { canceled: true };
 
@@ -647,6 +780,9 @@ export function createMihomoMaintenanceService({
     state.selectedModels = selectedModels;
     await pruneDeletedModels(poolId, selectedModels);
     pool = await getPool(poolId);
+    if (refreshRequest.scope !== "all") {
+      return executeScopedCycle({ poolId, state, cycleId, config, selectedModels, request: refreshRequest });
+    }
     await updateMaintenance(poolId, {
       cycleId,
       status: "discovering",
@@ -799,9 +935,11 @@ export function createMihomoMaintenanceService({
         abortController: null,
         hydrated: false,
         nextRunAt: null,
+        refreshRequests: [],
       };
       pools.set(poolId, state);
     }
+    if (!Array.isArray(state.refreshRequests)) state.refreshRequests = [];
     const models = cloneModels(selectedModels || await loadSelectedModels());
     const modelSetChanged = !sameModels(state.selectedModels, models);
     const firstSync = !state.hydrated;
@@ -902,13 +1040,43 @@ export function createMihomoMaintenanceService({
       return { accepted: false, poolId, reason };
     }
     const models = await loadSelectedModels();
+    const wasBusy = Boolean(pools.get(poolId)?.cyclePromise || pools.get(poolId)?.cycleScheduled);
     const state = await synchronizePool(pool, {
       selectedModels: models,
       scheduleCycle: true,
       reason,
     });
-    if (state?.cyclePromise) state.rerunRequested = true;
+    if (wasBusy && (state?.cyclePromise || state?.cycleScheduled)) state.rerunRequested = true;
     return { accepted: true, poolId, reason };
+  }
+
+  async function refresh(poolId, { scope = "all", modelId = null, identityKey = null } = {}) {
+    const normalizedPoolId = text(poolId);
+    const normalizedScope = text(scope) || "all";
+    if (!started) await start();
+    const state = pools.get(normalizedPoolId);
+    const request = {
+      scope: normalizedScope,
+      modelId: modelId || null,
+      identityKey: identityKey || null,
+    };
+    const duplicateRequest = Boolean(state?.refreshRequests?.some((pending) => (
+      pending.scope === request.scope
+        && pending.modelId === request.modelId
+        && pending.identityKey === request.identityKey
+    )));
+    const deduplicated = duplicateRequest || Boolean(state?.cyclePromise || state?.cycleScheduled);
+    if (state && !duplicateRequest) state.refreshRequests.push(request);
+    const result = await wake(normalizedPoolId, `manual:${normalizedScope}`);
+    return {
+      accepted: result.accepted === true,
+      poolId: normalizedPoolId,
+      reason: "manual",
+      deduplicated,
+      scope: normalizedScope,
+      modelId: modelId || null,
+      identityKey: identityKey || null,
+    };
   }
 
   function remove(poolId) {
@@ -944,6 +1112,7 @@ export function createMihomoMaintenanceService({
         rerunRequested: state.rerunRequested,
         nextRunAt: state.nextRunAt,
         hydrated: state.hydrated,
+        pendingRefreshes: state.refreshRequests.length,
       })),
       scheduler: scheduler.snapshot(),
     };
@@ -953,6 +1122,7 @@ export function createMihomoMaintenanceService({
     start,
     stop,
     wake,
+    refresh,
     remove,
     drain,
     snapshot,
@@ -972,6 +1142,10 @@ export function stopMihomoMaintenance() {
 
 export function wakeMihomoMaintenance(poolId = null, reason = "manual") {
   return defaultService.wake(poolId, reason);
+}
+
+export function refreshMihomoMaintenance(poolId, options = {}) {
+  return defaultService.refresh(poolId, options);
 }
 
 export function removeMihomoMaintenancePool(poolId) {

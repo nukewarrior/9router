@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
 import { getProxyPoolById } from "@/models";
-import { MihomoAdminError, mihomoAdminErrorResponse } from "@/lib/network/mihomoAdmin.js";
+import { mihomoAdminErrorResponse } from "@/lib/network/mihomoAdmin.js";
 import {
-  probeMihomoNodeEgress,
   probeMihomoNodesEgress,
   toPublicMihomoEgressProbeResponse,
 } from "@/lib/network/mihomoEgressDiscovery.js";
@@ -10,12 +9,6 @@ import { isMihomoProxyPool } from "@/lib/network/proxyPoolTypes.js";
 
 function text(value) {
   return value === undefined || value === null ? "" : String(value).trim();
-}
-
-function requiredText(value, fieldName) {
-  const normalized = text(value);
-  if (!normalized) throw new MihomoAdminError("MIHOMO_INVALID_REQUEST", `${fieldName} is required`, 400);
-  return normalized;
 }
 
 export async function POST(request, { params }) {
@@ -27,20 +20,15 @@ export async function POST(request, { params }) {
 
     const body = await request.json().catch(() => ({}));
     const hasNode = text(body?.nodeName);
-    const result = hasNode
-      ? await probeMihomoNodeEgress({
-        poolId: id,
-        proxyProvider: requiredText(body.proxyProvider || "__selector__", "proxyProvider"),
-        nodeName: requiredText(body.nodeName, "nodeName"),
-      })
-      : await probeMihomoNodesEgress({
-        poolId: id,
-        region: text(body?.region) || null,
-        proxyProvider: text(body?.proxyProvider) || null,
-        limit: body?.limit,
-        force: body?.force === true,
-        queueOnly: true,
-      });
+    const result = await probeMihomoNodesEgress({
+      poolId: id,
+      region: text(body?.region) || null,
+      proxyProvider: text(body?.proxyProvider) || null,
+      nodeName: hasNode || null,
+      limit: body?.limit,
+      force: hasNode ? true : body?.force === true,
+      queueOnly: true,
+    });
 
     return NextResponse.json(toPublicMihomoEgressProbeResponse(result), { headers: { "Cache-Control": "no-store" } });
   } catch (error) {

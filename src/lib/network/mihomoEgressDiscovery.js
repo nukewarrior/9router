@@ -11,7 +11,11 @@ import {
   isMihomoEgressFresh,
   recordMihomoNodeEgress,
 } from "./mihomoState.js";
-import { enqueueMihomoEgressBatch, getMihomoEgressProbeReason } from "./mihomoEgressScheduler.js";
+import {
+  enqueueMihomoEgressBatch,
+  getMihomoEgressProbeReason,
+} from "./mihomoEgressScheduler.js";
+import { MIHOMO_MAINTENANCE_PRIORITY } from "./mihomoMaintenanceScheduler.js";
 
 const MAX_OBSERVED_IPS = 5;
 
@@ -449,6 +453,7 @@ export async function probeMihomoNodesEgress({
   poolId,
   region = null,
   proxyProvider = null,
+  nodeName = null,
   limit = null,
   force = false,
   queueOnly = false,
@@ -482,6 +487,7 @@ export async function probeMihomoNodesEgress({
   const candidates = directory.nodes
     .filter((node) => !region || node.region === region)
     .filter((node) => !proxyProvider || node.proxyProvider === proxyProvider)
+    .filter((node) => !nodeName || node.nodeName === nodeName)
     .filter((node) => force || Boolean(getMihomoEgressProbeReason(node.egress, { nowMs, ttlMs: config.egressProbeTtlMs })) || Boolean(node.egress?.lastProbeError))
     .sort((a, b) => probeRank(a, nowMs) - probeRank(b, nowMs) || nodeAge(a) - nodeAge(b) || a.key.localeCompare(b.key));
   const boundedLimit = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Math.floor(Number(limit)) : candidates.length;
@@ -496,6 +502,7 @@ export async function probeMihomoNodesEgress({
         proxyProvider: node.proxyProvider,
         nodeName: node.nodeName,
         egress: node.egress,
+        expectedMappingVersion: Math.max(0, Math.floor(Number(node.egress?.mappingVersion) || 0)),
         reason: force
           ? "manual"
           : getMihomoEgressProbeReason(node.egress, { nowMs, ttlMs: config.egressProbeTtlMs }) || "manual",
@@ -505,6 +512,7 @@ export async function probeMihomoNodesEgress({
       fetchProbe,
       mutatePool,
       ttlMs: config.egressProbeTtlMs,
+      priority: MIHOMO_MAINTENANCE_PRIORITY.manual,
     });
     const refreshedDirectory = attachMihomoNodeEgress(directory, pool);
     return {
@@ -530,6 +538,8 @@ export async function probeMihomoNodesEgress({
       fetchProbe,
       mutatePool,
       nowMs,
+      expectedMappingVersion: Math.max(0, Math.floor(Number(node.egress?.mappingVersion) || 0)),
+      probeStartedAtMs: nowMs,
     });
     results.push(result);
     pool = result.pool || pool;

@@ -259,6 +259,65 @@ describe("Mihomo maintenance service", () => {
     harness.service.stop();
   });
 
+  it("honors scoped manual refreshes without running unrelated maintenance work", async () => {
+    const egressCalls = [];
+    const businessCalls = [];
+    const harness = makeHarness({
+      models: ["m1", "m2"],
+      probeEgress: async ({ mutatePool, poolId, proxyProvider, nodeName, expectedMappingVersion }) => {
+        egressCalls.push(nodeName);
+        await mutatePool(poolId, (next) => {
+          const state = migrateMihomoState(next.mihomoState);
+          const provider = state.proxyProviders[proxyProvider] ||= { nodes: {} };
+          const node = provider.nodes[nodeName] ||= { egress: null, transport: {} };
+          node.egress = {
+            ip: nodeName === "A" ? "203.0.113.1" : nodeName === "B" ? "203.0.113.2" : "203.0.113.3",
+            family: 4,
+            identityKey: `4:${nodeName === "A" ? "203.0.113.1" : nodeName === "B" ? "203.0.113.2" : "203.0.113.3"}`,
+            confidence: "stable",
+            sampleCount: 2,
+            successfulSamples: 2,
+            observedAt: 1000,
+            expiresAt: 1000000,
+            lastProbeAt: 1000,
+            needsProbe: false,
+            mappingVersion: Number(expectedMappingVersion) + 1,
+          };
+          next.mihomoState = state;
+          return next;
+        });
+        return { ok: true, stale: false };
+      },
+      probeBusiness: async (options) => {
+        businessCalls.push(`${options.modelId}:${options.entry.identityKey}`);
+        return { ok: true, stale: false };
+      },
+    });
+    await harness.service.start();
+    await harness.service.drain();
+    egressCalls.length = 0;
+    businessCalls.length = 0;
+
+    const modelRefresh = await harness.service.refresh("pool-1", { scope: "model", modelId: "m1" });
+    expect(modelRefresh).toMatchObject({ accepted: true, scope: "model", modelId: "m1" });
+    await harness.service.drain();
+    expect(egressCalls).toEqual([]);
+    expect(businessCalls).toEqual([
+      "m1:4:203.0.113.1",
+      "m1:4:203.0.113.2",
+      "m1:4:203.0.113.3",
+    ]);
+
+    egressCalls.length = 0;
+    businessCalls.length = 0;
+    await harness.service.refresh("pool-1", { scope: "egress", modelId: "m2", identityKey: "4:203.0.113.2" });
+    await harness.service.drain();
+    expect(egressCalls).toEqual([]);
+    expect(businessCalls).toEqual(["m2:4:203.0.113.2"]);
+
+    harness.service.stop();
+  });
+
   it("coalesces duplicate wake calls and cleans up deleted models and inactive pools", async () => {
     let activeCycles = 0;
     let maxActiveCycles = 0;
